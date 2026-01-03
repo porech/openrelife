@@ -7,7 +7,8 @@
     "start": "electron .",
     "build": "electron-builder",
     "build-mac": "electron-builder --mac",
-    "pack": "electron-builder --dir"
+    "pack": "electron-builder --dir",
+    "postinstall": "node scripts/download-uv.js"
   },
   "keywords": [
     "openrelife",
@@ -43,12 +44,24 @@
     },
     "extraResources": [
       {
+        "from": "bin",
+        "to": "bin",
+        "filter": [
+          "uv-x64",
+          "uv-arm64"
+        ]
+      },
+      {
         "from": "../openrelife",
         "to": "openrelife"
       },
       {
         "from": "../pyproject.toml",
         "to": "pyproject.toml"
+      },
+      {
+        "from": "../uv.lock",
+        "to": "uv.lock"
       }
     ],
     "files": [

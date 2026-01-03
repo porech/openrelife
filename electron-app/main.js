@@ -1,6 +1,6 @@
 const { app, BrowserWindow, globalShortcut, screen, Tray, Menu, nativeImage, Notification, dialog, systemPreferences, desktopCapturer, shell } = require('electron');
 const path = require('path');
-const { spawn, exec } = require('child_process');
+const { spawn, exec, execSync } = require('child_process');
 const fs = require('fs');
 
 let serverPort = 8082;
@@ -367,6 +367,115 @@ function killProcessOnPort(port) {
   });
 }
 
+// ... (other helper functions from before, if any, can be kept or redefined if needed)
+
+function getUvBinary() {
+    const isDev = !app.isPackaged;
+    // In dev, we look in local bin/ folder. In prod, it's in resources/bin/
+    const baseDir = isDev 
+        ? path.join(__dirname, '..', 'bin')
+        : path.join(process.resourcesPath, 'bin');
+    
+    let binaryName = 'uv-x64'; // Default to x64
+    if (process.arch === 'arm64') {
+        binaryName = 'uv-arm64';
+    }
+    
+    const binaryPath = path.join(baseDir, binaryName);
+    return binaryPath;
+}
+
+function getVenvPath() {
+    // We want the venv to be in a writable location
+    const userDataPath = app.getPath('userData') || app.getPath('appData');
+    // On macOS: ~/Library/Application Support/OpenReLife/venv
+    return path.join(userDataPath, 'venv');
+}
+
+async function setupVenv(projectRoot, logStream) {
+    const venvPath = getVenvPath();
+    const uvBinary = getUvBinary();
+    
+    console.log(`Checking venv at: ${venvPath}`);
+    console.log(`Using uv binary at: ${uvBinary}`);
+    
+    if (logStream) {
+        logStream.write(`Venv Path: ${venvPath}\n`);
+        logStream.write(`UV Binary: ${uvBinary}\n`);
+    }
+
+    // Basic check if python exists in venv
+    const pythonPath = path.join(venvPath, 'bin', 'python');
+    const venvExists = fs.existsSync(pythonPath);
+    
+    if (venvExists) {
+        console.log('✅ Found existing venv');
+        return venvPath;
+    }
+
+    console.log('⚠️ Venv missing or incomplete. Creating/Syncing...');
+    if (logStream) logStream.write('Creating/Syncing venv...\n');
+
+    // Ensure directory exists
+    if (!fs.existsSync(path.dirname(venvPath))) {
+        fs.mkdirSync(path.dirname(venvPath), { recursive: true });
+    }
+    
+    // We need to make sure uv uses the specified venv path
+    // We can use UV_PROJECT_ENVIRONMENT env var or .venv argument if locally inside project
+    // But since source is in read-only Resources (in prod), we must point it elsewhere.
+    // 'uv sync' might try to write to uv.lock if it's not up to date, which will fail in prod.
+    // So we use 'uv pip sync' or 'uv venv' + 'uv pip install'?
+    // 'uv sync' is for project management.
+    
+    // STRATEGY:
+    // 1. Set UV_PROJECT_ENVIRONMENT to our writable venv path.
+    // 2. Run 'uv sync --frozen' to avoid writing uv.lock.
+    // This assumes uv.lock is bundled and up to date with pyproject.toml.
+
+    try {
+        const env = {
+            ...process.env,
+            UV_PROJECT_ENVIRONMENT: venvPath,
+            // Ensure we don't use some other cache that might be read-only or owned by root
+            UV_CACHE_DIR: path.join(app.getPath('userData'), 'uv-cache')
+        };
+        
+        // Ensure cache dir exists
+        if (!fs.existsSync(env.UV_CACHE_DIR)) {
+            fs.mkdirSync(env.UV_CACHE_DIR, { recursive: true });
+        }
+
+        // Grant execute permission to bundled binary if needed
+        try { fs.chmodSync(uvBinary, 0o755); } catch {}
+
+        // Run sync
+        // We run it from projectRoot so it finds pyproject.toml and uv.lock
+        console.log(`Running: ${uvBinary} sync --frozen`);
+        if (logStream) logStream.write(`Running uv sync --frozen...\n`);
+
+        execSync(`"${uvBinary}" sync --frozen`, {
+            cwd: projectRoot,
+            env: env,
+            encoding: 'utf-8'
+        });
+        
+        console.log('✅ Venv setup complete');
+        if (logStream) logStream.write('Venv setup complete\n');
+        
+    } catch (err) {
+        console.error('Failed to setup venv:', err);
+        if (logStream) {
+             logStream.write(`Failed to setup venv: ${err.message}\n`);
+             if (err.stdout) logStream.write(`STDOUT: ${err.stdout}\n`);
+             if (err.stderr) logStream.write(`STDERR: ${err.stderr}\n`);
+        }
+        throw err;
+    }
+
+    return venvPath;
+}
+
 async function startBackend() {
   // Update port config before starting
   updateServerConfig();
@@ -378,7 +487,7 @@ async function startBackend() {
   // In prod, resourcesPath points to Contents/Resources where we copied openrelife and pyproject.toml
   const projectRoot = isDev ? path.join(__dirname, '..') : process.resourcesPath;
 
-  console.log('Starting backend in:', projectRoot);
+  console.log('Starting backend using files in:', projectRoot);
   
   // Set up logging
   const userDataPath = app.getPath('userData');
@@ -394,32 +503,33 @@ async function startBackend() {
   } catch (err) {
     console.error('Failed to create log stream:', err);
   }
-
-  // Enhance PATH to find uv in common user locations
-  const homeDir = app.getPath('home');
-  const commonPaths = [
-    path.join(homeDir, '.cargo/bin'),
-    path.join(homeDir, '.local/bin'),
-    '/usr/local/bin',
-    '/opt/homebrew/bin',
-    process.env.PATH
-  ];
   
+  // SETUP VENV
+  let venvPath;
+  try {
+      venvPath = await setupVenv(projectRoot, backendLogStream);
+  } catch (err) {
+      dialog.showErrorBox('Initialization Error', `Failed to set up Python environment.\n\n${err.message}`);
+      return;
+  }
+
+  // Determine python executable in the venv
+  const pythonExec = path.join(venvPath, 'bin', 'python');
+
   const env = { 
     ...process.env, 
-    PATH: commonPaths.join(path.delimiter),
     PYTHONUNBUFFERED: '1',
-    // Ensure we don't pick up some random virtualenv
-    VIRTUAL_ENV: undefined
+    VIRTUAL_ENV: venvPath,
+    PATH: `${path.join(venvPath, 'bin')}:${process.env.PATH}`
   };
   
-  console.log('Spawning backend with PATH:', env.PATH);
+  console.log('Spawning backend with python:', pythonExec);
 
-  pythonProcess = spawn('uv', ['run', 'python', '-m', 'openrelife.app'], {
+  pythonProcess = spawn(pythonExec, ['-m', 'openrelife.app'], {
     cwd: projectRoot,
-    shell: true,
+    shell: false, // Don't need shell since we run python directly
     env: env,
-    detached: true // Important for clean separation
+    detached: false 
   });
   
   if (backendLogStream) {
@@ -446,7 +556,7 @@ async function startBackend() {
   pythonProcess.on('error', (err) => {
     console.error('Failed to spawn python process:', err);
     if (backendLogStream) backendLogStream.write(`Failed to spawn: ${err.message}\n`);
-    dialog.showErrorBox('Backend Error', `Failed to start backend: ${err.message}. Make sure 'uv' is installed and available.`);
+    dialog.showErrorBox('Backend Error', `Failed to start backend: ${err.message}`);
   });
 
   pythonProcess.on('close', (code) => {
