@@ -402,6 +402,9 @@ async function setupVenv(projectRoot, logStream) {
     const venvPath = getVenvPath();
     const uvBinary = getUvBinary();
     
+    // Wait for window to be ready to receive IPC messages
+    await new Promise(r => setTimeout(r, 1000));
+    
     console.log(`Checking venv at: ${venvPath}`);
     updateStatus('Checking Python environment...');
 
@@ -417,6 +420,7 @@ async function setupVenv(projectRoot, logStream) {
     if (venvExists) {
         console.log('✅ Found existing venv');
         updateStatus('Environment found. Starting backend...');
+        await new Promise(r => setTimeout(r, 500));
         return venvPath;
     }
 
@@ -429,48 +433,57 @@ async function setupVenv(projectRoot, logStream) {
         fs.mkdirSync(path.dirname(venvPath), { recursive: true });
     }
     
-    // ... (rest of implementation) ...
     try {
         const env = {
             ...process.env,
             UV_PROJECT_ENVIRONMENT: venvPath,
-            // Ensure we don't use some other cache that might be read-only or owned by root
             UV_CACHE_DIR: path.join(app.getPath('userData'), 'uv-cache')
         };
         
-        // Ensure cache dir exists
         if (!fs.existsSync(env.UV_CACHE_DIR)) {
             fs.mkdirSync(env.UV_CACHE_DIR, { recursive: true });
         }
 
-        // Grant execute permission to bundled binary if needed
         try { fs.chmodSync(uvBinary, 0o755); } catch {}
 
-        // Run sync
-        // We run it from projectRoot so it finds pyproject.toml and uv.lock
         console.log(`Running: ${uvBinary} sync --frozen`);
         if (logStream) logStream.write(`Running uv sync --frozen...\n`);
         
         updateStatus('Installing dependencies...');
 
-        execSync(`"${uvBinary}" sync --frozen`, {
-            cwd: projectRoot,
-            env: env,
-            encoding: 'utf-8'
+        await new Promise((resolve, reject) => {
+            const child = spawn(uvBinary, ['sync', '--frozen'], {
+                cwd: projectRoot,
+                env: env
+            });
+            
+            child.stdout.on('data', (data) => {
+                const str = data.toString();
+                console.log(`uv: ${str}`);
+            });
+            
+            child.stderr.on('data', (data) => {
+                const str = data.toString();
+                console.error(`uv stderr: ${str}`);
+                if (logStream) logStream.write(`uv stderr: ${str}`);
+            });
+            
+            child.on('close', (code) => {
+                if (code === 0) resolve();
+                else reject(new Error(`uv sync exited with code ${code}`));
+            });
+            
+            child.on('error', (err) => reject(err));
         });
         
         console.log('✅ Venv setup complete');
-        updateStatus('Dependencies installed.');
         if (logStream) logStream.write('Venv setup complete\n');
         
     } catch (err) {
-        // ... err handling
         updateStatus('Error setting up environment.');
         console.error('Failed to setup venv:', err);
         if (logStream) {
              logStream.write(`Failed to setup venv: ${err.message}\n`);
-             if (err.stdout) logStream.write(`STDOUT: ${err.stdout}\n`);
-             if (err.stderr) logStream.write(`STDERR: ${err.stderr}\n`);
         }
         throw err;
     }
@@ -591,6 +604,31 @@ async function startBackend() {
         });
     }
   });
+}
+
+function stopBackend() {
+  if (pythonProcess) {
+    console.log('Stopping backend...');
+    if (backendLogStream) backendLogStream.end();
+
+    if (process.platform === 'win32') {
+        spawn("taskkill", ["/pid", pythonProcess.pid, '/f', '/t']);
+    } else {
+        try {
+            // Kill the entire process group
+            process.kill(-pythonProcess.pid, 'SIGTERM'); 
+        } catch (err) {
+            console.error('Failed to kill process group:', err);
+            // Fallback
+            try {
+                pythonProcess.kill();
+            } catch (e) {
+                console.error('Failed to kill process:', e);
+            }
+        }
+    }
+    pythonProcess = null;
+  }
 }
 
 app.whenReady().then(async () => {
