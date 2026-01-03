@@ -139,6 +139,10 @@ function createWindow() {
 
   mainWindow.once('ready-to-show', () => {
     console.log('✅ Window ready to show');
+    // Enforce fullscreen immediately if we have access
+    if (process.platform === 'darwin' && hasScreenAccess()) {
+        mainWindow.setSimpleFullScreen(true);
+    }
     mainWindow.show();
     mainWindow.focus();
   });
