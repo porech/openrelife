@@ -392,13 +392,19 @@ function getVenvPath() {
     return path.join(userDataPath, 'venv');
 }
 
+function updateStatus(message) {
+  if (mainWindow) {
+    mainWindow.webContents.send('update-status', message);
+  }
+}
+
 async function setupVenv(projectRoot, logStream) {
     const venvPath = getVenvPath();
     const uvBinary = getUvBinary();
     
     console.log(`Checking venv at: ${venvPath}`);
-    console.log(`Using uv binary at: ${uvBinary}`);
-    
+    updateStatus('Checking Python environment...');
+
     if (logStream) {
         logStream.write(`Venv Path: ${venvPath}\n`);
         logStream.write(`UV Binary: ${uvBinary}\n`);
@@ -410,29 +416,20 @@ async function setupVenv(projectRoot, logStream) {
     
     if (venvExists) {
         console.log('✅ Found existing venv');
+        updateStatus('Environment found. Starting backend...');
         return venvPath;
     }
 
     console.log('⚠️ Venv missing or incomplete. Creating/Syncing...');
     if (logStream) logStream.write('Creating/Syncing venv...\n');
+    updateStatus('Initializing Python environment (this may take a minute)...');
 
     // Ensure directory exists
     if (!fs.existsSync(path.dirname(venvPath))) {
         fs.mkdirSync(path.dirname(venvPath), { recursive: true });
     }
     
-    // We need to make sure uv uses the specified venv path
-    // We can use UV_PROJECT_ENVIRONMENT env var or .venv argument if locally inside project
-    // But since source is in read-only Resources (in prod), we must point it elsewhere.
-    // 'uv sync' might try to write to uv.lock if it's not up to date, which will fail in prod.
-    // So we use 'uv pip sync' or 'uv venv' + 'uv pip install'?
-    // 'uv sync' is for project management.
-    
-    // STRATEGY:
-    // 1. Set UV_PROJECT_ENVIRONMENT to our writable venv path.
-    // 2. Run 'uv sync --frozen' to avoid writing uv.lock.
-    // This assumes uv.lock is bundled and up to date with pyproject.toml.
-
+    // ... (rest of implementation) ...
     try {
         const env = {
             ...process.env,
@@ -453,6 +450,8 @@ async function setupVenv(projectRoot, logStream) {
         // We run it from projectRoot so it finds pyproject.toml and uv.lock
         console.log(`Running: ${uvBinary} sync --frozen`);
         if (logStream) logStream.write(`Running uv sync --frozen...\n`);
+        
+        updateStatus('Installing dependencies...');
 
         execSync(`"${uvBinary}" sync --frozen`, {
             cwd: projectRoot,
@@ -461,9 +460,12 @@ async function setupVenv(projectRoot, logStream) {
         });
         
         console.log('✅ Venv setup complete');
+        updateStatus('Dependencies installed.');
         if (logStream) logStream.write('Venv setup complete\n');
         
     } catch (err) {
+        // ... err handling
+        updateStatus('Error setting up environment.');
         console.error('Failed to setup venv:', err);
         if (logStream) {
              logStream.write(`Failed to setup venv: ${err.message}\n`);
@@ -507,10 +509,10 @@ async function startBackend() {
   // SETUP VENV
   let venvPath;
   try {
+      // internal logging already done in setupVenv
       venvPath = await setupVenv(projectRoot, backendLogStream);
   } catch (err) {
-      dialog.showErrorBox('Initialization Error', `Failed to set up Python environment.\n\n${err.message}`);
-      return;
+      throw err; // Re-throw to be caught by app.whenReady
   }
 
   // Determine python executable in the venv
@@ -520,14 +522,16 @@ async function startBackend() {
     ...process.env, 
     PYTHONUNBUFFERED: '1',
     VIRTUAL_ENV: venvPath,
-    PATH: `${path.join(venvPath, 'bin')}:${process.env.PATH}`
+    PATH: `${path.join(venvPath, 'bin')}:${process.env.PATH}`,
+    // Ensure we don't pick up other envs
+    PYTHONPATH: '' 
   };
   
   console.log('Spawning backend with python:', pythonExec);
 
   pythonProcess = spawn(pythonExec, ['-m', 'openrelife.app'], {
     cwd: projectRoot,
-    shell: false, // Don't need shell since we run python directly
+    shell: false, 
     env: env,
     detached: false 
   });
@@ -544,7 +548,6 @@ async function startBackend() {
 
   pythonProcess.stderr.on('data', (data) => {
     if (backendLogStream) backendLogStream.write(data);
-    // Werkzeug logs to stderr by default, treat as info
     const str = data.toString();
     if (str.includes('Error:') || str.includes('Exception:') || str.includes('Traceback')) {
         console.error(`Backend Error: ${str}`);
@@ -566,7 +569,6 @@ async function startBackend() {
     
     // If exit was abnormal and not during quit
     if (code !== 0 && !app.isQuitting) {
-        // Read tail of log file to show error
         let errorDetails = `Code: ${code}`;
         try {
             if (fs.existsSync(logPath)) {
@@ -574,9 +576,7 @@ async function startBackend() {
                 const lines = logs.trim().split('\n');
                 errorDetails = lines.slice(-10).join('\n');
             }
-        } catch (e) {
-            console.error('Failed to read logs for error', e);
-        }
+        } catch (e) {}
 
         dialog.showMessageBox({
             type: 'error',
@@ -593,39 +593,33 @@ async function startBackend() {
   });
 }
 
-function stopBackend() {
-  if (pythonProcess) {
-    console.log('Stopping backend...');
-    if (backendLogStream) backendLogStream.end();
-
-    // Kill the process group to ensure children (python) are killed since we used shell: true
-    if (process.platform === 'win32') {
-        spawn("taskkill", ["/pid", pythonProcess.pid, '/f', '/t']);
-    } else {
-        try {
-            // Kill the entire process group
-            process.kill(-pythonProcess.pid, 'SIGTERM'); 
-        } catch (err) {
-            console.error('Failed to kill process group:', err);
-            // Fallback
-            try {
-                pythonProcess.kill();
-            } catch (e) {
-                console.error('Failed to kill process:', e);
-            }
-        }
-    }
-    pythonProcess = null;
-  }
-}
-
 app.whenReady().then(async () => {
-  // Start backend server
-  await startBackend();
+  // Show window immediately (with loading screen)
+  createWindow();
+  
+  if (mainWindow) {
+      mainWindow.show();
+      mainWindow.focus();
+  }
 
   // Set app icon (works for dock in dev mode)
   if (process.platform === 'darwin') {
     app.dock.setIcon(path.join(__dirname, 'app-icon.png'));
+  }
+
+  // Start backend server (this will take time on first run)
+  // The loading screen is already visible, so user sees progress.
+  // We don't await this blocking UI, but we await it before setting up tray?
+  // Actually, we should await it, but since window is already shown, it's fine.
+  // Start backend server (this will take time on first run)
+  // The loading screen is already visible, so user sees progress.
+  try {
+      await startBackend();
+  } catch (err) {
+      console.error('Failed to start backend:', err);
+      updateStatus('Fatal Error: Failed to start backend.');
+      dialog.showErrorBox('Startup Error', `Failed to start application backend:\n${err.message}`);
+      // Don't quit immediately so they can read it, but nothing else will happen
   }
 
   // Create Application Menu
@@ -639,9 +633,11 @@ app.whenReady().then(async () => {
   
   // Don't show app in dock
   app.dock.hide();
-
+  
   // Register global shortcut: Cmd+Shift+Space
+  // ...
   const ret = globalShortcut.register('CommandOrControl+Shift+Space', () => {
+    // ...
     console.log('🎯 Hotkey pressed: Cmd+Shift+Space');
     if (mainWindow && mainWindow.isVisible()) {
       // If already visible, hide and show again to move to current virtual desktop
@@ -652,6 +648,9 @@ app.whenReady().then(async () => {
     }
     showWindow();
   });
+  
+  // ...
+
 
   if (!ret) {
     console.error('❌ Failed to register global shortcut');

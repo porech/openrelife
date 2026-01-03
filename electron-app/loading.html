@@ -130,6 +130,8 @@
     </div>
   </div>
   <script>
+    const statusEl = document.querySelector('p');
+
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
         if (window.electronAPI && window.electronAPI.hideWindow) {
@@ -137,6 +139,12 @@
         }
       }
     });
+
+    if (window.electronAPI && window.electronAPI.onUpdateStatus) {
+      window.electronAPI.onUpdateStatus((message) => {
+        if (statusEl) statusEl.textContent = message;
+      });
+    }
   </script>
 </body>
 
