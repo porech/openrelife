@@ -142,9 +142,15 @@ function createWindow() {
     // Enforce fullscreen immediately if we have access
     if (process.platform === 'darwin' && hasScreenAccess()) {
         mainWindow.setSimpleFullScreen(true);
+        mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
     }
     mainWindow.show();
+    mainWindow.moveTop();
     mainWindow.focus();
+    // Force app to active state (especially since we hid dock)
+    if (app.dock.isVisible() === false) {
+        app.focus({ steal: true });
+    }
   });
 
   mainWindow.on('closed', () => {
@@ -636,10 +642,17 @@ function stopBackend() {
 }
 
 app.whenReady().then(async () => {
+  // Hide dock immediately to avoid transition issues later
+  // This helps prevent the app from losing focus when dock hides
+  app.dock.hide();
+
   // Show window immediately (with loading screen)
   createWindow();
   
   if (mainWindow) {
+      if (process.platform === 'darwin') {
+        mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+      }
       mainWindow.show();
       mainWindow.focus();
   }
@@ -649,10 +662,6 @@ app.whenReady().then(async () => {
     app.dock.setIcon(path.join(__dirname, 'app-icon.png'));
   }
 
-  // Start backend server (this will take time on first run)
-  // The loading screen is already visible, so user sees progress.
-  // We don't await this blocking UI, but we await it before setting up tray?
-  // Actually, we should await it, but since window is already shown, it's fine.
   // Start backend server (this will take time on first run)
   // The loading screen is already visible, so user sees progress.
   try {
@@ -672,9 +681,6 @@ app.whenReady().then(async () => {
   
   // Check initial recording status
   checkRecordingStatus();
-  
-  // Don't show app in dock
-  app.dock.hide();
   
   // Register global shortcut: Cmd+Shift+Space
   // ...
