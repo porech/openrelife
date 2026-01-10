@@ -14,25 +14,37 @@ from openrelife.utils import (
     get_ax_window_title_osx,
     is_browser_incognito,
     _normalize_text,
+    _get_all_visible_browser_windows_osx,
+    _is_incognito_title,
     INCOGNITO_END_PATTERNS,
 )
 
 def main():
     print("=" * 60)
     print("INCOGNITO DETECTION TEST")
-    print("Focus a browser window and run this script")
+    print("Now checks ALL visible browser windows, not just focused!")
     print("=" * 60)
 
+    print("\n" + "-" * 60)
+    print("FOCUSED WINDOW INFO:")
+    print("-" * 60)
     app_name = get_active_app_name()
-    window_title = get_active_window_title()  # kCGWindowName
-
-    print(f"\nApp Name: {app_name}")
-    print(f"Window Title (kCGWindowName): {window_title}")
+    window_title = get_active_window_title()
+    print(f"  App: {app_name}")
+    print(f"  Title: {window_title}")
 
     if sys.platform == "darwin":
-        ax_title = get_ax_window_title_osx()
-        print(f"AXTitle (full): {ax_title}")
-        print(f"AXTitle normalized: {_normalize_text(ax_title)}")
+        print("\n" + "-" * 60)
+        print("ALL VISIBLE BROWSER WINDOWS:")
+        print("-" * 60)
+        browser_windows = _get_all_visible_browser_windows_osx()
+        if browser_windows:
+            for i, (app, title) in enumerate(browser_windows, 1):
+                is_incog = _is_incognito_title(title)
+                symbol = "🔒" if is_incog else "  "
+                print(f"  {symbol} [{app}] {title}")
+        else:
+            print("  (no browser windows found)")
 
     print("\n" + "-" * 60)
     print("DETECTION RESULT:")
@@ -41,25 +53,9 @@ def main():
     is_incognito = is_browser_incognito()
 
     if is_incognito:
-        print("✅ INCOGNITO DETECTED!")
+        print("🔒 INCOGNITO DETECTED - Recording will be skipped!")
     else:
-        print("❌ Not in incognito mode (or not a browser)")
-
-    print("\n" + "-" * 60)
-    print("Pattern matching debug:")
-    print("-" * 60)
-
-    if sys.platform == "darwin":
-        ax_title = get_ax_window_title_osx()
-        if ax_title:
-            title_norm = _normalize_text(ax_title)
-            print(f"Normalized title ends with: ...{title_norm[-30:]}")
-            print(f"\nChecking patterns:")
-            for pattern in INCOGNITO_END_PATTERNS[:6]:  # Show first 6 patterns
-                pattern_norm = _normalize_text(pattern)
-                matches = title_norm.endswith(pattern_norm)
-                symbol = "✅" if matches else "  "
-                print(f"  {symbol} '{pattern}' -> {matches}")
+        print("✅ No incognito windows visible - Recording allowed")
 
 if __name__ == "__main__":
     main()

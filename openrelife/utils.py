@@ -572,64 +572,119 @@ def _normalize_text(text: str) -> str:
     return ''.join(c for c in normalized if not unicodedata.combining(c))
 
 
-def _get_full_window_title() -> str:
-    """Get the full window title including browser suffix.
+def _is_incognito_title(title: str) -> bool:
+    """Check if a window title indicates incognito/private mode."""
+    if not title:
+        return False
+    title_normalized = _normalize_text(title)
+    for pattern in INCOGNITO_END_PATTERNS:
+        pattern_normalized = _normalize_text(pattern)
+        if title_normalized.endswith(pattern_normalized):
+            return True
+    return False
 
-    On macOS, uses AXTitle from Accessibility API.
-    On Windows/Linux, uses the standard window title (which already includes suffix).
+
+def _get_all_visible_browser_windows_osx() -> list:
+    """Get AXTitle of all visible browser windows on macOS.
+
+    Uses CGWindowListCopyWindowInfo to enumerate visible windows,
+    then Accessibility API to get full AXTitle for browser windows.
 
     Returns:
-        The full window title, or empty string if unavailable.
+        List of (app_name, window_title) tuples for all visible browser windows.
     """
-    if sys.platform == "darwin":
-        # Try AXTitle first (includes browser suffix)
-        title = get_ax_window_title_osx()
-        if title:
-            return title
-        # Fallback to kCGWindowName (may not include suffix)
-        return get_active_window_title_osx()
-    elif sys.platform == "win32":
-        return get_active_window_title_windows()
-    elif sys.platform.startswith("linux"):
-        return get_active_window_title_linux()
-    return ""
+    if CGWindowListCopyWindowInfo is None or AppServices is None:
+        return []
+
+    result = []
+    try:
+        # Get all on-screen windows
+        window_list = CGWindowListCopyWindowInfo(
+            kCGWindowListOptionOnScreenOnly,
+            kCGNullWindowID
+        )
+
+        # Group windows by owner PID to batch accessibility queries
+        browser_pids = {}
+        for window in window_list:
+            owner_name = window.get("kCGWindowOwnerName", "")
+            owner_pid = window.get("kCGWindowOwnerPID")
+
+            if not owner_name or not owner_pid:
+                continue
+
+            # Check if this is a known browser
+            owner_lower = owner_name.lower()
+            if any(browser in owner_lower for browser in BROWSER_APP_NAMES):
+                if owner_pid not in browser_pids:
+                    browser_pids[owner_pid] = owner_name
+
+        # For each browser PID, get all window titles via Accessibility API
+        for pid, app_name in browser_pids.items():
+            try:
+                app_ref = AppServices.AXUIElementCreateApplication(pid)
+                err, windows = AppServices.AXUIElementCopyAttributeValue(
+                    app_ref, "AXWindows", None
+                )
+
+                if err == 0 and windows:
+                    for window in windows:
+                        err, title = AppServices.AXUIElementCopyAttributeValue(
+                            window, "AXTitle", None
+                        )
+                        if err == 0 and title:
+                            result.append((app_name, str(title)))
+            except Exception:
+                pass  # Skip this app on error
+
+    except Exception as e:
+        print(f"Error enumerating browser windows: {e}")
+
+    return result
 
 
 def is_browser_incognito() -> bool:
-    """Checks if the active window is a browser in incognito/private mode.
+    """Checks if ANY visible browser window is in incognito/private mode.
 
-    Uses the full window title (AXTitle on macOS) which includes the browser
-    suffix like "(Incognito)" or "(Private Browsing)". This is more reliable
-    than checking the page title which doesn't contain the incognito indicator.
+    On macOS, enumerates ALL visible windows (not just focused) and checks
+    if any browser window has an incognito indicator in its title.
+
+    This prevents capturing screenshots when incognito windows are visible
+    anywhere on screen, even if not in focus.
 
     Returns:
-        True if a browser is detected in incognito/private mode, False otherwise.
+        True if any visible browser is in incognito/private mode, False otherwise.
     """
     try:
-        app_name = get_active_app_name()
-        if not app_name:
+        if sys.platform == "darwin":
+            # Check ALL visible browser windows
+            browser_windows = _get_all_visible_browser_windows_osx()
+            for app_name, title in browser_windows:
+                if _is_incognito_title(title):
+                    return True
             return False
 
-        # Check if the active app is a known browser
-        app_name_lower = app_name.lower()
-        is_browser = any(browser in app_name_lower for browser in BROWSER_APP_NAMES)
+        elif sys.platform == "win32":
+            # Windows: fall back to checking only active window for now
+            app_name = get_active_app_name()
+            if not app_name:
+                return False
+            app_name_lower = app_name.lower()
+            if not any(browser in app_name_lower for browser in BROWSER_APP_NAMES):
+                return False
+            title = get_active_window_title_windows()
+            return _is_incognito_title(title)
 
-        if not is_browser:
-            return False
-
-        # Get the full window title (with browser suffix)
-        title = _get_full_window_title()
-        if not title:
-            return False
-
-        # Normalize for comparison (lowercase, remove accents)
-        title_normalized = _normalize_text(title)
-
-        # Check if title ends with any known incognito pattern
-        for pattern in INCOGNITO_END_PATTERNS:
-            pattern_normalized = _normalize_text(pattern)
-            if title_normalized.endswith(pattern_normalized):
-                return True
+        elif sys.platform.startswith("linux"):
+            # Linux: fall back to checking only active window for now
+            app_name = get_active_app_name()
+            if not app_name:
+                return False
+            app_name_lower = app_name.lower()
+            if not any(browser in app_name_lower for browser in BROWSER_APP_NAMES):
+                return False
+            title = get_active_window_title_linux()
+            return _is_incognito_title(title)
 
         return False
 
