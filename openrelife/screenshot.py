@@ -14,6 +14,7 @@ from openrelife.utils import (
     get_active_app_name,
     get_active_window_title,
     is_user_active,
+    is_browser_incognito,
 )
 
 
@@ -155,6 +156,11 @@ def record_screenshots_thread():
         # Avoid recording the recorder (OpenReLife itself)
         active_title = get_active_window_title()
         if active_title and "OpenReLife" in active_title:
+            time.sleep(1)
+            continue
+
+        # Skip recording if browser is in incognito/private mode
+        if is_browser_incognito():
             time.sleep(1)
             continue
 

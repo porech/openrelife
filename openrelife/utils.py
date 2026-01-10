@@ -461,3 +461,83 @@ def is_user_active() -> bool:
     else:
         print(f"Warning: User active check not supported for platform '{sys.platform}', assuming active.")
         raise NotImplementedError(f"Platform '{sys.platform}' not supported yet for is_user_active")
+
+
+# Known browser application names (lowercase for comparison)
+BROWSER_APP_NAMES = {
+    # macOS app names
+    "google chrome", "chrome", "safari", "firefox", "microsoft edge",
+    "opera", "brave browser", "vivaldi", "arc",
+    # Windows executable names
+    "chrome.exe", "msedge.exe", "firefox.exe", "opera.exe", "brave.exe",
+    "vivaldi.exe", "safari.exe", "arc.exe",
+    # Linux app names
+    "chromium", "chromium-browser", "google-chrome", "firefox-esr",
+}
+
+# Patterns that indicate incognito/private browsing mode in window titles
+# These patterns are checked in lowercase
+INCOGNITO_PATTERNS = [
+    # Chrome
+    "incognito",
+    "incognita",  # Italian
+    "inkognito",  # German
+    "incógnito",  # Spanish/Portuguese
+    "navigation privée",  # French
+    # Firefox
+    "private browsing",
+    "navigazione anonima",  # Italian
+    "privates fenster",  # German
+    "navegación privada",  # Spanish
+    "navigation privée",  # French
+    "navegação privada",  # Portuguese
+    # Safari
+    "private",  # Safari shows "Private" in title
+    "privata",  # Italian
+    # Edge
+    "inprivate",
+    # Opera
+    "private",
+    # Brave
+    "private",
+]
+
+
+def is_browser_incognito() -> bool:
+    """Checks if the active window is a browser in incognito/private mode.
+
+    Detects incognito mode by checking if the active application is a known
+    browser and if the window title contains patterns indicating private
+    browsing mode.
+
+    Returns:
+        True if a browser is in incognito/private mode, False otherwise.
+    """
+    try:
+        app_name = get_active_app_name()
+        window_title = get_active_window_title()
+
+        if not app_name:
+            return False
+
+        # Check if the active app is a browser
+        app_name_lower = app_name.lower()
+        is_browser = any(browser in app_name_lower for browser in BROWSER_APP_NAMES)
+
+        if not is_browser:
+            return False
+
+        # Check if the window title indicates incognito/private mode
+        if not window_title:
+            return False
+
+        title_lower = window_title.lower()
+
+        for pattern in INCOGNITO_PATTERNS:
+            if pattern in title_lower:
+                return True
+
+        return False
+    except Exception as e:
+        print(f"Error checking incognito mode: {e}")
+        return False
