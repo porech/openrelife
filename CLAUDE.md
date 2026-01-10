@@ -11,7 +11,11 @@ Use conventional commits format. See recent commits for examples:
 - `chore:` maintenance
 - `refactor:` code refactoring
 
-Scope is optional but recommended: `feat(settings): add incognito browser configuration`
+Rules:
+- One-liner commits only (no multi-line messages)
+- No signatures or Co-Authored-By
+- Compare with recent commits to match the style
+- Scope is optional but recommended: `feat(settings): add incognito browser configuration`
 
 ## Code Style
 - Python codebase

@@ -1,6 +1,7 @@
 import sys
 import datetime
 import re
+import unicodedata
 
 # Platform-specific imports with error handling
 try:
@@ -29,6 +30,11 @@ except ImportError:
     CGWindowListCopyWindowInfo = None
     kCGNullWindowID = None
     kCGWindowListOptionOnScreenOnly = None
+
+try:
+    import ApplicationServices as AppServices
+except ImportError:
+    AppServices = None
 
 try:
     import subprocess
@@ -135,6 +141,65 @@ def get_active_window_title_osx() -> str:
         print(f"Error getting macOS window title: {e}")
         return ""
     return ""  # Default if no specific window is found
+
+
+def get_ax_window_title_osx() -> str:
+    """Gets the full AXTitle of the active window on macOS using Accessibility API.
+
+    Unlike kCGWindowName which only contains the page title, AXTitle includes
+    the full window title with browser suffix (e.g., "(Incognito)" or "(InPrivate)").
+
+    Requires the pyobjc package and Accessibility permissions.
+
+    Returns:
+        The full AXTitle of the active window, or an empty string if unavailable.
+    """
+    if AppServices is None or NSWorkspace is None:
+        return ""
+
+    try:
+        # Get the frontmost application
+        workspace = NSWorkspace.sharedWorkspace()
+        active_app = workspace.frontmostApplication()
+
+        if active_app is None:
+            return ""
+
+        pid = active_app.processIdentifier()
+
+        # Create AXUIElement for the application
+        app_ref = AppServices.AXUIElementCreateApplication(pid)
+
+        # Try to get the focused window
+        err, focused_window = AppServices.AXUIElementCopyAttributeValue(
+            app_ref, "AXFocusedWindow", None
+        )
+
+        if err == 0 and focused_window:
+            # Get AXTitle from the focused window
+            err, title = AppServices.AXUIElementCopyAttributeValue(
+                focused_window, "AXTitle", None
+            )
+            if err == 0 and title:
+                return str(title)
+
+        # Fallback: try AXWindows if AXFocusedWindow fails
+        err, windows = AppServices.AXUIElementCopyAttributeValue(
+            app_ref, "AXWindows", None
+        )
+        if err == 0 and windows and len(windows) > 0:
+            # Get AXTitle from the first window
+            err, title = AppServices.AXUIElementCopyAttributeValue(
+                windows[0], "AXTitle", None
+            )
+            if err == 0 and title:
+                return str(title)
+
+        return ""
+
+    except Exception as e:
+        print(f"Error getting AXTitle: {e}")
+        return ""
 
 
 def get_active_app_name_windows() -> str:
@@ -463,3 +528,111 @@ def is_user_active() -> bool:
         raise NotImplementedError(f"Platform '{sys.platform}' not supported yet for is_user_active")
 
 
+# Browser names for incognito detection (lowercase)
+BROWSER_APP_NAMES = {
+    # macOS app names
+    "google chrome", "chrome", "safari", "firefox", "microsoft edge",
+    "opera", "brave browser", "vivaldi", "arc", "zen browser", "orion",
+    # Windows executable names
+    "chrome.exe", "msedge.exe", "firefox.exe", "opera.exe", "brave.exe",
+    "vivaldi.exe", "safari.exe", "arc.exe",
+    # Linux app names
+    "chromium", "chromium-browser", "google-chrome", "firefox-esr",
+}
+
+# Incognito/private browsing patterns to match at end of window title
+# WITHOUT the opening parenthesis, so they match variants like:
+#   "(Incognito)" and "(In incognito)" both end with "incognito)"
+# These are checked case-insensitively with unicode normalization
+INCOGNITO_END_PATTERNS = [
+    # Chrome variants (multiple languages)
+    "incognito)",         # EN: "(Incognito)", IT: "(In incognito)"
+    "inkognito)",         # DE: "(Inkognito)"
+    # Firefox variants
+    "private browsing)",  # EN: "(Private Browsing)"
+    "anonima)",           # IT: "(Navigazione anonima)"
+    "privée)",            # FR: "(Navigation privée)"
+    "privada)",           # ES/PT: "(Navegación privada)", "(Navegação privada)"
+    "fenster)",           # DE: "(Privates Fenster)"
+    # Safari
+    "private)",           # EN: "(Private)"
+    "privato)",           # IT: "(Privato)"
+    # Edge
+    "inprivate)",         # "(InPrivate)"
+    # Brave/Opera
+    "private window)",    # "(Private Window)"
+]
+
+
+def _normalize_text(text: str) -> str:
+    """Normalize text for comparison: lowercase and remove accents."""
+    # Normalize unicode (NFKD decomposes accented chars)
+    normalized = unicodedata.normalize('NFKD', text.lower())
+    # Remove combining diacritical marks (accents)
+    return ''.join(c for c in normalized if not unicodedata.combining(c))
+
+
+def _get_full_window_title() -> str:
+    """Get the full window title including browser suffix.
+
+    On macOS, uses AXTitle from Accessibility API.
+    On Windows/Linux, uses the standard window title (which already includes suffix).
+
+    Returns:
+        The full window title, or empty string if unavailable.
+    """
+    if sys.platform == "darwin":
+        # Try AXTitle first (includes browser suffix)
+        title = get_ax_window_title_osx()
+        if title:
+            return title
+        # Fallback to kCGWindowName (may not include suffix)
+        return get_active_window_title_osx()
+    elif sys.platform == "win32":
+        return get_active_window_title_windows()
+    elif sys.platform.startswith("linux"):
+        return get_active_window_title_linux()
+    return ""
+
+
+def is_browser_incognito() -> bool:
+    """Checks if the active window is a browser in incognito/private mode.
+
+    Uses the full window title (AXTitle on macOS) which includes the browser
+    suffix like "(Incognito)" or "(Private Browsing)". This is more reliable
+    than checking the page title which doesn't contain the incognito indicator.
+
+    Returns:
+        True if a browser is detected in incognito/private mode, False otherwise.
+    """
+    try:
+        app_name = get_active_app_name()
+        if not app_name:
+            return False
+
+        # Check if the active app is a known browser
+        app_name_lower = app_name.lower()
+        is_browser = any(browser in app_name_lower for browser in BROWSER_APP_NAMES)
+
+        if not is_browser:
+            return False
+
+        # Get the full window title (with browser suffix)
+        title = _get_full_window_title()
+        if not title:
+            return False
+
+        # Normalize for comparison (lowercase, remove accents)
+        title_normalized = _normalize_text(title)
+
+        # Check if title ends with any known incognito pattern
+        for pattern in INCOGNITO_END_PATTERNS:
+            pattern_normalized = _normalize_text(pattern)
+            if title_normalized.endswith(pattern_normalized):
+                return True
+
+        return False
+
+    except Exception as e:
+        print(f"Error checking incognito mode: {e}")
+        return False
