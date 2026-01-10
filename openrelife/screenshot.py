@@ -138,6 +138,26 @@ def get_screenshot_quality() -> str:
     global screenshot_quality
     return screenshot_quality
 
+# Incognito skip settings
+skip_incognito_recording = True  # Default: skip recording in incognito mode
+custom_incognito_browser_apps: list[str] = []  # Additional browser apps to check for incognito
+
+def set_skip_incognito_recording(skip: bool):
+    global skip_incognito_recording
+    skip_incognito_recording = skip
+
+def get_skip_incognito_recording() -> bool:
+    global skip_incognito_recording
+    return skip_incognito_recording
+
+def set_custom_incognito_browser_apps(apps: list[str]):
+    global custom_incognito_browser_apps
+    custom_incognito_browser_apps = apps
+
+def get_custom_incognito_browser_apps() -> list[str]:
+    global custom_incognito_browser_apps
+    return custom_incognito_browser_apps
+
 
 def record_screenshots_thread():
     # TODO: fix the error from huggingface tokenizers
@@ -159,8 +179,8 @@ def record_screenshots_thread():
             time.sleep(1)
             continue
 
-        # Skip recording if browser is in incognito/private mode
-        if is_browser_incognito():
+        # Skip recording if browser is in incognito/private mode (if enabled)
+        if skip_incognito_recording and is_browser_incognito(custom_incognito_browser_apps):
             time.sleep(1)
             continue
 

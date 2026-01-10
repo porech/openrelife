@@ -467,10 +467,10 @@ def is_user_active() -> bool:
 BROWSER_APP_NAMES = {
     # macOS app names
     "google chrome", "chrome", "safari", "firefox", "microsoft edge",
-    "opera", "brave browser", "vivaldi", "arc",
+    "opera", "brave browser", "vivaldi", "arc", "comet", "chatgpt",
     # Windows executable names
     "chrome.exe", "msedge.exe", "firefox.exe", "opera.exe", "brave.exe",
-    "vivaldi.exe", "safari.exe", "arc.exe",
+    "vivaldi.exe", "safari.exe", "arc.exe", "comet.exe", "chatgpt.exe",
     # Linux app names
     "chromium", "chromium-browser", "google-chrome", "firefox-esr",
 }
@@ -503,12 +503,15 @@ INCOGNITO_PATTERNS = [
 ]
 
 
-def is_browser_incognito() -> bool:
+def is_browser_incognito(custom_browser_apps: list[str] | None = None) -> bool:
     """Checks if the active window is a browser in incognito/private mode.
 
     Detects incognito mode by checking if the active application is a known
     browser and if the window title contains patterns indicating private
     browsing mode.
+
+    Args:
+        custom_browser_apps: Optional list of additional browser app names to check.
 
     Returns:
         True if a browser is in incognito/private mode, False otherwise.
@@ -520,9 +523,13 @@ def is_browser_incognito() -> bool:
         if not app_name:
             return False
 
-        # Check if the active app is a browser
+        # Check if the active app is a browser (built-in + custom apps)
         app_name_lower = app_name.lower()
-        is_browser = any(browser in app_name_lower for browser in BROWSER_APP_NAMES)
+        all_browser_apps = BROWSER_APP_NAMES.copy()
+        if custom_browser_apps:
+            all_browser_apps.update(app.lower() for app in custom_browser_apps)
+
+        is_browser = any(browser in app_name_lower for browser in all_browser_apps)
 
         if not is_browser:
             return False

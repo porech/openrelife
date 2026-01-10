@@ -17,7 +17,11 @@ from openrelife.screenshot import (
     get_screenshot_interval,
     set_screenshot_interval,
     get_screenshot_quality,
-    set_screenshot_quality
+    set_screenshot_quality,
+    get_skip_incognito_recording,
+    set_skip_incognito_recording,
+    get_custom_incognito_browser_apps,
+    set_custom_incognito_browser_apps
 )
 from openrelife.utils import human_readable_time, timestamp_to_human_readable
 from openrelife.ai_ocr import get_ai_provider
@@ -35,6 +39,10 @@ def load_settings():
                     set_screenshot_interval(int(settings['screenshot_interval']))
                 if 'screenshot_quality' in settings:
                     set_screenshot_quality(settings['screenshot_quality'])
+                if 'skip_incognito_recording' in settings:
+                    set_skip_incognito_recording(bool(settings['skip_incognito_recording']))
+                if 'custom_incognito_browser_apps' in settings:
+                    set_custom_incognito_browser_apps(list(settings['custom_incognito_browser_apps']))
         except Exception as e:
             print(f"Error loading settings: {e}")
 
@@ -1212,7 +1220,37 @@ def timeline_v2():
             Higher quality will result in larger file sizes.
           </small>
         </div>
-        
+
+        <div class="form-group" style="margin-top: 24px;">
+          <label style="display: flex; align-items: center; cursor: pointer;">
+            <input type="checkbox" id="skipIncognitoCheckbox" style="width: 18px; height: 18px; margin-right: 10px; accent-color: #8B5CF6;" onchange="toggleCustomBrowserApps()">
+            Do not record incognito browser sessions
+          </label>
+          <small class="form-text text-muted" style="margin-top: 8px;">
+            When enabled, OpenReLife will skip recording when a browser is in incognito/private mode.
+          </small>
+        </div>
+
+        <div id="customBrowserAppsSection" class="form-group" style="margin-top: 16px; padding-left: 28px; display: none;">
+          <label>
+            Additional Browser Apps
+            <div class="tooltip-container">
+              <i class="bi bi-question-circle" style="cursor: help; margin-left: 4px; color: rgba(255,255,255,0.4);"></i>
+              <span class="tooltip-text">Add app names for browsers not automatically detected (e.g., custom or lesser-known browsers). Most common browsers are already recognized.</span>
+            </div>
+          </label>
+          <div id="customBrowserAppsList" style="margin-bottom: 8px;"></div>
+          <div style="display: flex; gap: 8px;">
+            <input type="text" id="newBrowserAppInput" class="form-control" placeholder="Enter app name (e.g., MyBrowser)" style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: #fff; height: auto; padding: 0.375rem 0.75rem; flex: 1;">
+            <button type="button" class="btn btn-outline-primary btn-sm" onclick="addCustomBrowserApp()" style="white-space: nowrap;">
+              <i class="bi bi-plus"></i> Add
+            </button>
+          </div>
+          <small class="form-text text-muted" style="margin-top: 8px;">
+            Common browsers (Chrome, Safari, Firefox, Edge, Opera, Brave, Vivaldi, Arc, Comet, ChatGPT) are automatically detected.
+          </small>
+        </div>
+
         <div class="form-group" style="margin-top: 24px;">
           <label>
             Server Port
@@ -2021,6 +2059,8 @@ def timeline_v2():
     
 
     // Settings Logic
+    let customBrowserApps = [];
+
     function openSettings() {
         document.getElementById('settingsModalOverlay').classList.add('show');
         // Load retention
@@ -2049,6 +2089,47 @@ def timeline_v2():
             .then(data => {
                 document.getElementById('portInput').value = data.port;
             });
+        // Load incognito settings
+        fetch('/api/settings/incognito')
+            .then(r => r.json())
+            .then(data => {
+                document.getElementById('skipIncognitoCheckbox').checked = data.skip_incognito;
+                customBrowserApps = data.custom_browser_apps || [];
+                toggleCustomBrowserApps();
+                renderCustomBrowserAppsList();
+            });
+    }
+
+    function toggleCustomBrowserApps() {
+        const checkbox = document.getElementById('skipIncognitoCheckbox');
+        const section = document.getElementById('customBrowserAppsSection');
+        section.style.display = checkbox.checked ? 'block' : 'none';
+    }
+
+    function renderCustomBrowserAppsList() {
+        const container = document.getElementById('customBrowserAppsList');
+        container.innerHTML = '';
+        customBrowserApps.forEach((app, index) => {
+            const tag = document.createElement('span');
+            tag.style.cssText = 'display: inline-flex; align-items: center; background: rgba(139, 92, 246, 0.2); border: 1px solid rgba(139, 92, 246, 0.4); border-radius: 16px; padding: 4px 10px; margin: 4px 4px 4px 0; font-size: 13px;';
+            tag.innerHTML = `${app} <button type="button" onclick="removeCustomBrowserApp(${index})" style="background: none; border: none; color: rgba(255,255,255,0.6); cursor: pointer; padding: 0 0 0 6px; font-size: 14px;">&times;</button>`;
+            container.appendChild(tag);
+        });
+    }
+
+    function addCustomBrowserApp() {
+        const input = document.getElementById('newBrowserAppInput');
+        const appName = input.value.trim();
+        if (appName && !customBrowserApps.includes(appName)) {
+            customBrowserApps.push(appName);
+            renderCustomBrowserAppsList();
+            input.value = '';
+        }
+    }
+
+    function removeCustomBrowserApp(index) {
+        customBrowserApps.splice(index, 1);
+        renderCustomBrowserAppsList();
     }
 
     function checkIntervalWarning(val) {
@@ -2067,7 +2148,7 @@ def timeline_v2():
     function saveSettings() {
         const days = document.getElementById('retentionSelect').value;
         const interval = document.getElementById('intervalInput').value;
-        
+
         fetch('/api/settings', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
@@ -2075,7 +2156,9 @@ def timeline_v2():
                 retention_days: days,
                 interval: interval,
                 quality: document.getElementById('qualitySelect').value,
-                port: document.getElementById('portInput').value
+                port: document.getElementById('portInput').value,
+                skip_incognito: document.getElementById('skipIncognitoCheckbox').checked,
+                custom_browser_apps: customBrowserApps
             })
         })
         .then(r => r.json())
@@ -3410,6 +3493,46 @@ def api_settings_port():
         return jsonify({'port': port})
 
 
+@app.route("/api/settings/incognito", methods=["GET", "POST"])
+def api_settings_incognito():
+    settings_path = os.path.join(appdata_folder, "settings.json")
+    import json
+
+    if request.method == "POST":
+        data = request.json
+        skip_incognito = data.get("skip_incognito", True)
+        custom_browser_apps = data.get("custom_browser_apps", [])
+
+        # Update runtime settings
+        set_skip_incognito_recording(skip_incognito)
+        set_custom_incognito_browser_apps(custom_browser_apps)
+
+        # Save to file
+        try:
+            settings = {}
+            if os.path.exists(settings_path):
+                with open(settings_path, 'r') as f:
+                    content = f.read().strip()
+                    if content:
+                        settings = json.loads(content)
+
+            settings['skip_incognito_recording'] = skip_incognito
+            settings['custom_incognito_browser_apps'] = custom_browser_apps
+
+            with open(settings_path, 'w') as f:
+                json.dump(settings, f, indent=4)
+
+            return jsonify({'success': True})
+        except Exception as e:
+            return jsonify({'success': False, 'error': str(e)}), 500
+
+    else:
+        return jsonify({
+            'skip_incognito': get_skip_incognito_recording(),
+            'custom_browser_apps': get_custom_incognito_browser_apps()
+        })
+
+
 @app.route("/api/settings", methods=["POST"])
 def api_update_settings():
     """Unified endpoint to update all settings atomically"""
@@ -3457,6 +3580,17 @@ def api_update_settings():
                 restart_required = True
         except ValueError:
             pass
+
+    # Update Incognito Settings
+    if 'skip_incognito' in data:
+        skip_incognito = bool(data['skip_incognito'])
+        set_skip_incognito_recording(skip_incognito)
+        settings['skip_incognito_recording'] = skip_incognito
+
+    if 'custom_browser_apps' in data:
+        custom_apps = list(data['custom_browser_apps'])
+        set_custom_incognito_browser_apps(custom_apps)
+        settings['custom_incognito_browser_apps'] = custom_apps
 
     # Save atomically
     try:
