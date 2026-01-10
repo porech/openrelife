@@ -14,6 +14,7 @@ from openrelife.utils import (
     get_active_app_name,
     get_active_window_title,
     is_user_active,
+    is_browser_incognito,
 )
 
 
@@ -137,6 +138,17 @@ def get_screenshot_quality() -> str:
     global screenshot_quality
     return screenshot_quality
 
+# Incognito Skip Settings (default: enabled - do not record incognito)
+skip_incognito_recording = True
+
+def set_skip_incognito_recording(skip: bool):
+    global skip_incognito_recording
+    skip_incognito_recording = skip
+
+def get_skip_incognito_recording() -> bool:
+    global skip_incognito_recording
+    return skip_incognito_recording
+
 def record_screenshots_thread():
     # TODO: fix the error from huggingface tokenizers
     import os
@@ -154,6 +166,11 @@ def record_screenshots_thread():
         # Avoid recording the recorder (OpenReLife itself)
         active_title = get_active_window_title()
         if active_title and "OpenReLife" in active_title:
+            time.sleep(1)
+            continue
+
+        # Skip recording if browser is in incognito mode (if enabled)
+        if skip_incognito_recording and is_browser_incognito():
             time.sleep(1)
             continue
 

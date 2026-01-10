@@ -18,6 +18,8 @@ from openrelife.screenshot import (
     set_screenshot_interval,
     get_screenshot_quality,
     set_screenshot_quality,
+    get_skip_incognito_recording,
+    set_skip_incognito_recording,
 )
 from openrelife.utils import human_readable_time, timestamp_to_human_readable
 from openrelife.ai_ocr import get_ai_provider
@@ -35,6 +37,8 @@ def load_settings():
                     set_screenshot_interval(int(settings['screenshot_interval']))
                 if 'screenshot_quality' in settings:
                     set_screenshot_quality(settings['screenshot_quality'])
+                if 'skip_incognito' in settings:
+                    set_skip_incognito_recording(bool(settings['skip_incognito']))
         except Exception as e:
             print(f"Error loading settings: {e}")
 
@@ -1220,6 +1224,16 @@ def timeline_v2():
         </div>
 
         <div class="form-group" style="margin-top: 24px;">
+          <label style="display: flex; align-items: center; cursor: pointer;">
+            <input type="checkbox" id="skipIncognitoCheckbox" checked style="width: 18px; height: 18px; margin-right: 10px; accent-color: #0d6efd;">
+            Skip recording in incognito/private mode
+          </label>
+          <small class="form-text text-muted" style="margin-top: 8px;">
+            When enabled, screenshots will not be captured while a browser is in incognito or private browsing mode.
+          </small>
+        </div>
+
+        <div class="form-group" style="margin-top: 24px;">
           <label>
             Server Port
              <div class="tooltip-container">
@@ -2057,6 +2071,12 @@ def timeline_v2():
             .then(data => {
                 document.getElementById('qualitySelect').value = data.quality;
             });
+        // Load skip incognito
+        fetch('/api/settings/skip_incognito')
+            .then(r => r.json())
+            .then(data => {
+                document.getElementById('skipIncognitoCheckbox').checked = data.skip_incognito;
+            });
         // Load port
         fetch('/api/settings/port')
             .then(r => r.json())
@@ -2089,6 +2109,7 @@ def timeline_v2():
                 retention_days: days,
                 interval: interval,
                 quality: document.getElementById('qualitySelect').value,
+                skip_incognito: document.getElementById('skipIncognitoCheckbox').checked,
                 port: document.getElementById('portInput').value
             })
         })
@@ -3379,6 +3400,38 @@ def api_settings_quality():
         return jsonify({'quality': get_screenshot_quality()})
 
 
+@app.route("/api/settings/skip_incognito", methods=["GET", "POST"])
+def api_settings_skip_incognito():
+    settings_path = os.path.join(appdata_folder, "settings.json")
+    import json
+
+    if request.method == "POST":
+        data = request.json
+        skip = data.get("skip_incognito", True)
+        set_skip_incognito_recording(bool(skip))
+
+        # Save to file
+        try:
+            settings = {}
+            if os.path.exists(settings_path):
+                with open(settings_path, 'r') as f:
+                    content = f.read().strip()
+                    if content:
+                        settings = json.loads(content)
+
+            settings['skip_incognito'] = bool(skip)
+
+            with open(settings_path, 'w') as f:
+                json.dump(settings, f, indent=4)
+
+            return jsonify({'success': True})
+        except Exception as e:
+            return jsonify({'success': False, 'error': str(e)}), 500
+
+    else:
+        return jsonify({'skip_incognito': get_skip_incognito_recording()})
+
+
 @app.route("/api/settings/port", methods=["GET", "POST"])
 def api_settings_port():
     settings_path = os.path.join(appdata_folder, "settings.json")
@@ -3460,7 +3513,13 @@ def api_update_settings():
         if quality in ['low', 'medium', 'high']:
             set_screenshot_quality(quality)
             settings['screenshot_quality'] = quality
-            
+
+    # Update Skip Incognito
+    if 'skip_incognito' in data:
+        skip = bool(data['skip_incognito'])
+        set_skip_incognito_recording(skip)
+        settings['skip_incognito'] = skip
+
     # Update Port
     if 'port' in data:
         try:
