@@ -180,7 +180,7 @@ def record_screenshots_thread():
             continue
 
         # Skip recording if browser is in incognito/private mode (if enabled)
-        if skip_incognito_recording and is_browser_incognito(custom_incognito_browser_apps):
+        if get_skip_incognito_recording() and is_browser_incognito(get_custom_incognito_browser_apps()):
             time.sleep(1)
             continue
 
