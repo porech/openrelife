@@ -467,6 +467,11 @@ def timeline_v2():
       background: rgba(30,30,30,0.85); box-shadow: 0 8px 32px rgba(0,0,0,0.4);
     }
     .search-icon { position: absolute; right: 15px; top: 50%; transform: translateY(-50%); color: rgba(255,255,255,0.4); }
+    .search-spinner {
+      position: absolute; right: 15px; top: 50%; transform: translateY(-50%);
+      color: rgba(0,123,255,0.8); animation: spin 1s linear infinite;
+    }
+    @keyframes spin { from { transform: translateY(-50%) rotate(0deg); } to { transform: translateY(-50%) rotate(360deg); } }
     
     /* Search results */
     .search-results {
@@ -1097,6 +1102,7 @@ def timeline_v2():
       <div class="search-wrapper">
         <input type="text" class="search-input" id="searchInput" placeholder="Search your history...">
         <i class="bi bi-search search-icon" id="searchIcon"></i>
+        <i class="bi bi-arrow-clockwise search-spinner" id="searchSpinner" style="display: none;"></i>
         <i class="bi bi-x-circle-fill clear-icon" id="searchClear" style="display: none;"></i>
       </div>
     </div>
@@ -1825,6 +1831,7 @@ def timeline_v2():
     
     const searchIcon = document.getElementById('searchIcon');
     const searchClear = document.getElementById('searchClear');
+    const searchSpinner = document.getElementById('searchSpinner');
 
     // Search
     searchInput.addEventListener('input', () => {
@@ -1858,14 +1865,18 @@ def timeline_v2():
       if (searchController) searchController.abort();
       searchController = new AbortController();
 
+      // Show loading spinner
+      searchIcon.style.display = 'none';
+      searchSpinner.style.display = 'block';
+
       try {
         const response = await fetch(`/api/search?q=${encodeURIComponent(q)}`, { signal: searchController.signal });
         const results = await response.json();
-        
+
         if (results.length === 0) {
           searchResults.innerHTML = '<p style="color: rgba(255,255,255,0.5); text-align: center;">No results found</p>';
         } else {
-          searchResults.innerHTML = '<div class="results-grid">' + 
+          searchResults.innerHTML = '<div class="results-grid">' +
             results.map(r => `
               <div class="result-card" onclick="goToTimestamp(${r.timestamp})">
                 <img src="/static/${r.timestamp}.webp" alt="">
@@ -1879,6 +1890,9 @@ def timeline_v2():
       } catch (err) {
         if (err.name === 'AbortError') return;
         console.error('Search error:', err);
+      } finally {
+        // Hide loading spinner
+        searchSpinner.style.display = 'none';
       }
     }
     
