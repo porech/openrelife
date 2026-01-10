@@ -149,6 +149,40 @@ def get_skip_incognito_recording() -> bool:
     global skip_incognito_recording
     return skip_incognito_recording
 
+def _wait_with_incognito_check(seconds: float) -> bool:
+    """Wait for specified seconds, checking for incognito mode periodically.
+
+    Args:
+        seconds: Total time to wait in seconds.
+
+    Returns:
+        True if incognito was detected during wait, False otherwise.
+    """
+    if not skip_incognito_recording:
+        time.sleep(seconds)
+        return False
+
+    # Check every min(seconds, 3) seconds normally
+    # If incognito detected, check every 1 second until it's gone
+    check_interval = min(seconds, 3.0)
+    elapsed = 0.0
+
+    while elapsed < seconds:
+        if is_browser_incognito():
+            # Incognito detected - wait here with frequent checks until it's gone
+            while is_browser_incognito():
+                time.sleep(1)
+            # Incognito gone - restart the wait
+            elapsed = 0.0
+            continue
+
+        sleep_time = min(check_interval, seconds - elapsed)
+        time.sleep(sleep_time)
+        elapsed += sleep_time
+
+    return False
+
+
 def record_screenshots_thread():
     # TODO: fix the error from huggingface tokenizers
     import os
@@ -169,7 +203,7 @@ def record_screenshots_thread():
             time.sleep(1)
             continue
 
-        # Skip recording if browser is in incognito mode (if enabled)
+        # Check for incognito before taking screenshot
         if skip_incognito_recording and is_browser_incognito():
             time.sleep(1)
             continue
@@ -228,5 +262,6 @@ def record_screenshots_thread():
                     text, timestamp, embedding, active_app_name, active_window_title, words_coords
                 )
 
-        time.sleep(screenshot_interval) # Wait before taking the next screenshot
+        # Wait before taking the next screenshot, checking for incognito periodically
+        _wait_with_incognito_check(screenshot_interval)
 

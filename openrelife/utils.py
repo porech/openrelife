@@ -532,7 +532,7 @@ def is_user_active() -> bool:
 BROWSER_APP_NAMES = {
     # macOS app names
     "google chrome", "chrome", "safari", "firefox", "microsoft edge",
-    "opera", "brave browser", "vivaldi", "arc", "zen browser", "orion",
+    "opera", "brave browser", "vivaldi", "arc", "zen browser", "orion", "comet",
     # Windows executable names
     "chrome.exe", "msedge.exe", "firefox.exe", "opera.exe", "brave.exe",
     "vivaldi.exe", "safari.exe", "arc.exe",
@@ -637,8 +637,8 @@ def _get_all_visible_browser_windows_osx() -> list:
             except Exception:
                 pass  # Skip this app on error
 
-    except Exception as e:
-        print(f"Error enumerating browser windows: {e}")
+    except Exception:
+        pass
 
     return result
 
