@@ -23,7 +23,7 @@ from openrelife.screenshot import (
     get_custom_incognito_browser_apps,
     set_custom_incognito_browser_apps
 )
-from openrelife.utils import human_readable_time, timestamp_to_human_readable
+from openrelife.utils import human_readable_time, timestamp_to_human_readable, is_browser_incognito, get_active_app_name, get_active_window_title
 from openrelife.ai_ocr import get_ai_provider
 
 app = Flask(__name__)
@@ -3505,6 +3505,23 @@ def api_settings_port():
             except:
                 pass
         return jsonify({'port': port})
+
+
+@app.route("/api/debug/incognito", methods=["GET"])
+def api_debug_incognito():
+    """Debug endpoint to test incognito detection"""
+    app_name = get_active_app_name()
+    window_title = get_active_window_title()
+    custom_apps = get_custom_incognito_browser_apps()
+    is_incognito = is_browser_incognito(custom_apps, debug=True)
+
+    return jsonify({
+        'app_name': app_name,
+        'window_title': window_title,
+        'is_incognito': is_incognito,
+        'skip_incognito_enabled': get_skip_incognito_recording(),
+        'custom_browser_apps': custom_apps
+    })
 
 
 @app.route("/api/settings/incognito", methods=["GET", "POST"])

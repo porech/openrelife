@@ -503,7 +503,7 @@ INCOGNITO_PATTERNS = [
 ]
 
 
-def is_browser_incognito(custom_browser_apps: list[str] | None = None) -> bool:
+def is_browser_incognito(custom_browser_apps: list[str] | None = None, debug: bool = False) -> bool:
     """Checks if the active window is a browser in incognito/private mode.
 
     Detects incognito mode by checking if the active application is a known
@@ -512,6 +512,7 @@ def is_browser_incognito(custom_browser_apps: list[str] | None = None) -> bool:
 
     Args:
         custom_browser_apps: Optional list of additional browser app names to check.
+        debug: If True, prints debug information.
 
     Returns:
         True if a browser is in incognito/private mode, False otherwise.
@@ -519,6 +520,9 @@ def is_browser_incognito(custom_browser_apps: list[str] | None = None) -> bool:
     try:
         app_name = get_active_app_name()
         window_title = get_active_window_title()
+
+        if debug:
+            print(f"[DEBUG] App name: '{app_name}', Window title: '{window_title}'")
 
         if not app_name:
             return False
@@ -531,19 +535,28 @@ def is_browser_incognito(custom_browser_apps: list[str] | None = None) -> bool:
 
         is_browser = any(browser in app_name_lower for browser in all_browser_apps)
 
+        if debug:
+            print(f"[DEBUG] Is browser: {is_browser}, Checking against: {all_browser_apps}")
+
         if not is_browser:
             return False
 
         # Check if the window title indicates incognito/private mode
         if not window_title:
+            if debug:
+                print(f"[DEBUG] No window title found for browser '{app_name}'")
             return False
 
         title_lower = window_title.lower()
 
         for pattern in INCOGNITO_PATTERNS:
             if pattern in title_lower:
+                if debug:
+                    print(f"[DEBUG] Incognito pattern '{pattern}' found in title")
                 return True
 
+        if debug:
+            print(f"[DEBUG] No incognito pattern found in title '{window_title}'")
         return False
     except Exception as e:
         print(f"Error checking incognito mode: {e}")
