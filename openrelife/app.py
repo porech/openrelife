@@ -1153,6 +1153,12 @@ def timeline_v2():
              <div class="timeline-menu-item" onclick="openSettings()">
                <i class="bi bi-gear"></i> Settings
              </div>
+             <div class="timeline-menu-item" onclick="hideAppWindow()">
+               <i class="bi bi-window-dash"></i> Nascondi finestra
+             </div>
+             <div class="timeline-menu-item danger" onclick="quitAppFromMenu()">
+               <i class="bi bi-power"></i> Chiudi OpenReLife
+             </div>
              <div class="timeline-menu-item danger" onclick="enterDeleteMode()">
                <i class="bi bi-trash"></i> Cancella
              </div>
@@ -1356,6 +1362,21 @@ def timeline_v2():
       document.getElementById('timelineMenu').classList.remove('show');
     });
     
+    function hideAppWindow() {
+      document.getElementById('timelineMenu').classList.remove('show');
+      if (window.electronAPI && window.electronAPI.hideWindow) {
+        window.electronAPI.hideWindow();
+      }
+    }
+
+    function quitAppFromMenu() {
+      document.getElementById('timelineMenu').classList.remove('show');
+      if (!confirm('Chiudere OpenReLife?')) return;
+      if (window.electronAPI && window.electronAPI.quitApp) {
+        window.electronAPI.quitApp();
+      }
+    }
+
     function enterDeleteMode() {
       isDeleteMode = true;
       document.getElementById('timelinePill').classList.add('delete-mode');
