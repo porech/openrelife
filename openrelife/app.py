@@ -1065,6 +1065,16 @@ def timeline_v2():
       <button class="sidebar-close" onclick="toggleSidebar()">&times;</button>
       
       <div class="sidebar-section">
+        <h3>App</h3>
+        <button class="sidebar-btn" onclick="hideAppWindow()">
+          <i class="bi bi-window-dash"></i> Nascondi finestra
+        </button>
+        <button class="sidebar-btn" onclick="quitAppFromMenu()">
+          <i class="bi bi-power"></i> Chiudi OpenReLife
+        </button>
+      </div>
+
+      <div class="sidebar-section">
         <h3>OCR Settings</h3>
         
         <div class="ocr-mode-selector">
@@ -1092,15 +1102,6 @@ def timeline_v2():
         <pre id="extractedText"></pre>
       </div>
 
-      <div class="sidebar-section">
-        <h3>App</h3>
-        <button class="sidebar-btn" onclick="hideAppWindow()">
-          <i class="bi bi-window-dash"></i> Nascondi finestra
-        </button>
-        <button class="sidebar-btn" onclick="quitAppFromMenu()">
-          <i class="bi bi-power"></i> Chiudi OpenReLife
-        </button>
-      </div>
     </div>
     
     <!-- Search bar -->
@@ -1162,12 +1163,6 @@ def timeline_v2():
           <div class="timeline-menu" id="timelineMenu">
              <div class="timeline-menu-item" onclick="openSettings()">
                <i class="bi bi-gear"></i> Settings
-             </div>
-             <div class="timeline-menu-item" onclick="hideAppWindow()">
-               <i class="bi bi-window-dash"></i> Nascondi finestra
-             </div>
-             <div class="timeline-menu-item danger" onclick="quitAppFromMenu()">
-               <i class="bi bi-power"></i> Chiudi OpenReLife
              </div>
              <div class="timeline-menu-item danger" onclick="enterDeleteMode()">
                <i class="bi bi-trash"></i> Cancella
