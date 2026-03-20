@@ -65,7 +65,7 @@ function loadApp(retryCount = 0) {
       if (res.ok) {
         console.log('✅ Backend connected! Loading app...');
         mainWindow.loadURL(openRecallUrl);
-        if (process.platform === 'darwin' && hasScreenAccess()) {
+        if (windowShouldBeVisible && process.platform === 'darwin' && hasScreenAccess()) {
            mainWindow.setSimpleFullScreen(true);
         }
         if (windowShouldBeVisible) {
@@ -124,7 +124,9 @@ function createWindow() {
           if (hasScreenAccess()) {
               clearInterval(checkInterval);
               if (mainWindow) {
-                  mainWindow.setSimpleFullScreen(true);
+                  if (windowShouldBeVisible) {
+                    mainWindow.setSimpleFullScreen(true);
+                  }
                   mainWindow.setSize(width, height);
               }
           }
@@ -142,8 +144,8 @@ function createWindow() {
 
   mainWindow.once('ready-to-show', () => {
     console.log('✅ Window ready to show');
-    // Enforce fullscreen immediately if we have access
-    if (process.platform === 'darwin' && hasScreenAccess()) {
+    // Enforce fullscreen immediately only if we actually want to show the window
+    if (windowShouldBeVisible && process.platform === 'darwin' && hasScreenAccess()) {
         mainWindow.setSimpleFullScreen(true);
         mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
     }
