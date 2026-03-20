@@ -27,6 +27,36 @@
       animation: fadeIn 0.8s ease-out forwards;
     }
 
+    .floating-actions {
+      position: fixed;
+      top: 16px;
+      right: 16px;
+      display: flex;
+      gap: 8px;
+      z-index: 1000;
+    }
+
+    .floating-btn {
+      width: 36px;
+      height: 36px;
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      background: rgba(20, 20, 20, 0.7);
+      color: rgba(255, 255, 255, 0.92);
+      border-radius: 999px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      backdrop-filter: blur(6px);
+      transition: all 120ms ease;
+    }
+
+    .floating-btn:hover {
+      background: rgba(255, 255, 255, 0.15);
+      border-color: rgba(255, 255, 255, 0.5);
+    }
+
     .logo-container {
       position: relative;
       margin-bottom: 32px;
@@ -117,6 +147,11 @@
 </head>
 
 <body>
+  <div class="floating-actions">
+    <button id="hideBtn" class="floating-btn" title="Hide window to tray" aria-label="Hide window">×</button>
+    <button id="quitBtn" class="floating-btn" title="Quit OpenReLife" aria-label="Quit app">⏻</button>
+  </div>
+
   <div class="container">
     <div class="logo-container">
       <img src="./app-icon.png"
@@ -131,14 +166,29 @@
   </div>
   <script>
     const statusEl = document.querySelector('p');
+    const hideBtn = document.getElementById('hideBtn');
+    const quitBtn = document.getElementById('quitBtn');
+
+    const hideWindow = () => {
+      if (window.electronAPI && window.electronAPI.hideWindow) {
+        window.electronAPI.hideWindow();
+      }
+    };
+
+    const quitApp = () => {
+      if (window.electronAPI && window.electronAPI.quitApp) {
+        window.electronAPI.quitApp();
+      }
+    };
 
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
-        if (window.electronAPI && window.electronAPI.hideWindow) {
-          window.electronAPI.hideWindow();
-        }
+        hideWindow();
       }
     });
+
+    if (hideBtn) hideBtn.addEventListener('click', hideWindow);
+    if (quitBtn) quitBtn.addEventListener('click', quitApp);
 
     if (window.electronAPI && window.electronAPI.onUpdateStatus) {
       window.electronAPI.onUpdateStatus((message) => {

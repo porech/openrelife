@@ -9,6 +9,7 @@ let mainWindow = null;
 let tray = null;
 let isPaused = false;
 let pauseReminderInterval = null;
+let windowShouldBeVisible = false;
 
 
 // Set explicit app name for notifications
@@ -67,8 +68,10 @@ function loadApp(retryCount = 0) {
         if (process.platform === 'darwin' && hasScreenAccess()) {
            mainWindow.setSimpleFullScreen(true);
         }
-        mainWindow.show();
-        mainWindow.focus();
+        if (windowShouldBeVisible) {
+          mainWindow.show();
+          mainWindow.focus();
+        }
       } else {
         throw new Error(`Status check failed: ${res.status} ${res.statusText}`);
       }
@@ -144,12 +147,14 @@ function createWindow() {
         mainWindow.setSimpleFullScreen(true);
         mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
     }
-    mainWindow.show();
-    mainWindow.moveTop();
-    mainWindow.focus();
-    // Force app to active state (especially since we hid dock)
-    if (app.dock.isVisible() === false) {
-        app.focus({ steal: true });
+    if (windowShouldBeVisible) {
+      mainWindow.show();
+      mainWindow.moveTop();
+      mainWindow.focus();
+      // Force app to active state (especially since we hid dock)
+      if (app.dock.isVisible() === false) {
+          app.focus({ steal: true });
+      }
     }
   });
 
@@ -173,6 +178,8 @@ function createWindow() {
 } 
 
 function showWindow() {
+  windowShouldBeVisible = true;
+
   if (mainWindow === null) {
     createWindow();
   }
@@ -195,6 +202,8 @@ function showWindow() {
 }
 
 function hideWindow() {
+  windowShouldBeVisible = false;
+
   if (mainWindow) {
     mainWindow.webContents.send('reset-ui');
     mainWindow.setSimpleFullScreen(false);
@@ -646,24 +655,18 @@ app.whenReady().then(async () => {
   // This helps prevent the app from losing focus when dock hides
   app.dock.hide();
 
-  // Show window immediately (with loading screen)
+  // Create hidden window immediately (loads splash + starts backend polling)
   createWindow();
-  
-  if (mainWindow) {
-      if (process.platform === 'darwin') {
-        mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-      }
-      mainWindow.show();
-      mainWindow.focus();
-  }
 
   // Set app icon (works for dock in dev mode)
   if (process.platform === 'darwin') {
     app.dock.setIcon(path.join(__dirname, 'app-icon.png'));
   }
 
+  // Create tray icon right away so app can start in background
+  createTray();
+
   // Start backend server (this will take time on first run)
-  // The loading screen is already visible, so user sees progress.
   try {
       await startBackend();
   } catch (err) {
@@ -675,9 +678,6 @@ app.whenReady().then(async () => {
 
   // Create Application Menu
   createMenu();
-
-  // Create tray icon first
-  createTray();
   
   // Check initial recording status
   checkRecordingStatus();
@@ -711,6 +711,11 @@ app.whenReady().then(async () => {
       console.log('🔒 ESC pressed in app - hiding window');
       hideWindow();
     }
+  });
+
+  ipcMain.on('quit-app', () => {
+    app.isQuitting = true;
+    app.quit();
   });
 
   console.log('='.repeat(50));

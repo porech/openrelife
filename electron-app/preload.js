@@ -4,7 +4,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onResetUI: (callback) => ipcRenderer.on('reset-ui', (_event, value) => callback(value)),
   onOpenSettings: (callback) => ipcRenderer.on('open-settings', (_event, value) => callback(value)),
   onUpdateStatus: (callback) => ipcRenderer.on('update-status', (_event, value) => callback(value)),
-  hideWindow: () => ipcRenderer.send('hide-window')
+  hideWindow: () => ipcRenderer.send('hide-window'),
+  quitApp: () => ipcRenderer.send('quit-app')
 });
 
 window.addEventListener('DOMContentLoaded', () => {
