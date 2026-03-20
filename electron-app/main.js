@@ -440,14 +440,13 @@ async function setupVenv(projectRoot, logStream) {
     
     if (venvExists) {
         console.log('✅ Found existing venv');
-        updateStatus('Environment found. Starting backend...');
-        await new Promise(r => setTimeout(r, 500));
-        return venvPath;
+        if (logStream) logStream.write('Existing venv found, running sync to pick up bundled updates...\n');
+        updateStatus('Updating Python environment...');
+    } else {
+        console.log('⚠️ Venv missing or incomplete. Creating/Syncing...');
+        if (logStream) logStream.write('Creating/Syncing venv...\n');
+        updateStatus('Initializing Python environment (this may take a minute)...');
     }
-
-    console.log('⚠️ Venv missing or incomplete. Creating/Syncing...');
-    if (logStream) logStream.write('Creating/Syncing venv...\n');
-    updateStatus('Initializing Python environment (this may take a minute)...');
 
     // Ensure directory exists
     if (!fs.existsSync(path.dirname(venvPath))) {
