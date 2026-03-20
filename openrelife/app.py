@@ -1091,6 +1091,16 @@ def timeline_v2():
         </button>
         <pre id="extractedText"></pre>
       </div>
+
+      <div class="sidebar-section">
+        <h3>App</h3>
+        <button class="sidebar-btn" onclick="hideAppWindow()">
+          <i class="bi bi-window-dash"></i> Nascondi finestra
+        </button>
+        <button class="sidebar-btn" onclick="quitAppFromMenu()">
+          <i class="bi bi-power"></i> Chiudi OpenReLife
+        </button>
+      </div>
     </div>
     
     <!-- Search bar -->
@@ -1363,14 +1373,28 @@ def timeline_v2():
     });
     
     function hideAppWindow() {
-      document.getElementById('timelineMenu').classList.remove('show');
+      const timelineMenu = document.getElementById('timelineMenu');
+      if (timelineMenu) timelineMenu.classList.remove('show');
+
+      const sidebar = document.getElementById('sidebar');
+      if (sidebar && sidebar.classList.contains('open')) {
+        sidebar.classList.remove('open');
+      }
+
       if (window.electronAPI && window.electronAPI.hideWindow) {
         window.electronAPI.hideWindow();
       }
     }
 
     function quitAppFromMenu() {
-      document.getElementById('timelineMenu').classList.remove('show');
+      const timelineMenu = document.getElementById('timelineMenu');
+      if (timelineMenu) timelineMenu.classList.remove('show');
+
+      const sidebar = document.getElementById('sidebar');
+      if (sidebar && sidebar.classList.contains('open')) {
+        sidebar.classList.remove('open');
+      }
+
       if (!confirm('Chiudere OpenReLife?')) return;
       if (window.electronAPI && window.electronAPI.quitApp) {
         window.electronAPI.quitApp();
