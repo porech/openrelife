@@ -1067,10 +1067,10 @@ def timeline_v2():
       <div class="sidebar-section">
         <h3>App</h3>
         <button class="sidebar-btn" onclick="hideAppWindow()">
-          <i class="bi bi-window-dash"></i> Nascondi finestra
+          <i class="bi bi-window-dash"></i> Hide window
         </button>
         <button class="sidebar-btn" onclick="quitAppFromMenu()">
-          <i class="bi bi-power"></i> Chiudi OpenReLife
+          <i class="bi bi-power"></i> Quit OpenReLife
         </button>
       </div>
 
@@ -1390,7 +1390,7 @@ def timeline_v2():
         sidebar.classList.remove('open');
       }
 
-      if (!confirm('Chiudere OpenReLife?')) return;
+      if (!confirm('Quit OpenReLife?')) return;
       if (window.electronAPI && window.electronAPI.quitApp) {
         window.electronAPI.quitApp();
       }
