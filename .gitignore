@@ -53,3 +53,4 @@ logs/
 openrelife/retention_config.json
 openrelife/ai_config.json
 .claude
+.worktrees/
