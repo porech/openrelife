@@ -13,6 +13,9 @@ Entry = namedtuple("Entry", ["id", "app", "title", "text", "timestamp", "embeddi
 # Lightweight entry without embedding blob (for timeline/sync)
 LightEntry = namedtuple("LightEntry", ["id", "app", "title", "text", "timestamp", "words_coords", "ai_text", "ai_words_coords"])
 
+# Minimal entry for bulk listing — no embedding, no coords (~1KB per entry vs ~35KB)
+MetadataEntry = namedtuple("MetadataEntry", ["id", "app", "title", "text", "timestamp", "ai_text"])
+
 
 def create_db() -> None:
     """
@@ -233,6 +236,38 @@ def delete_entries(timestamps: List[int]) -> int:
     return deleted_count
 
 
+
+
+def get_entries_metadata(limit: int = None, min_timestamp: int = 0) -> List[MetadataEntry]:
+    """Retrieves entries without embedding or coords — only ~1KB per entry."""
+    entries: List[MetadataEntry] = []
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            query = "SELECT id, app, title, text, timestamp, ai_text FROM entries WHERE timestamp > ? ORDER BY timestamp DESC"
+            params: list = [min_timestamp]
+
+            if limit:
+                query += " LIMIT ?"
+                params.append(limit)
+
+            cursor.execute(query, tuple(params))
+            for row in cursor:
+                entries.append(
+                    MetadataEntry(
+                        id=row["id"],
+                        app=row["app"],
+                        title=row["title"],
+                        text=row["text"],
+                        timestamp=row["timestamp"],
+                        ai_text=row["ai_text"],
+                    )
+                )
+    except sqlite3.Error as e:
+        print(f"Database error while fetching metadata entries: {e}")
+    return entries
 
 
 def get_entries_light(limit: int = None, min_timestamp: int = 0) -> List[LightEntry]:
