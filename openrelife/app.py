@@ -8,8 +8,8 @@ from jinja2 import BaseLoader
 from PIL import Image
 
 from openrelife.config import appdata_folder, screenshots_path
-from openrelife.database import create_db, get_all_entries, get_timestamps, update_ai_ocr, delete_entries, get_entry_by_timestamp
-from openrelife.nlp import cosine_similarity, get_embedding
+from openrelife.database import create_db, get_timestamps, update_ai_ocr, delete_entries, get_entry_by_timestamp, get_entries_light, search_entries_streaming
+from openrelife.nlp import get_embedding
 from openrelife.screenshot import (
     record_screenshots_thread,
     get_recording_paused,
@@ -416,10 +416,10 @@ def timeline_v2():
     if len(all_timestamps) > limit:
         # We still need all timestamps for the slider
         partial_timestamps = all_timestamps[:limit]
-        entries = get_all_entries(limit=limit)
+        entries = get_entries_light(limit=limit)
     else:
         partial_timestamps = all_timestamps
-        entries = get_all_entries()
+        entries = get_entries_light()
 
     entries_dict = {
         entry.timestamp: {
@@ -2361,42 +2361,14 @@ def api_search():
     if not q:
         return jsonify([])
     
-    entries = get_all_entries()
-    embeddings = [entry.embedding for entry in entries]
     query_embedding = get_embedding(q)
-    similarities = [cosine_similarity(query_embedding, emb) for emb in embeddings]
-    
-    query_lower = q.lower()
-    scores = []
-    for i, entry in enumerate(entries):
-        semantic_score = similarities[i]
-        text_lower = entry.text.lower()
-        keyword_boost = 0
-        
-        if query_lower in text_lower:
-            keyword_boost = 0.5
-        else:
-            query_words = query_lower.split()
-            matched = sum(1 for word in query_words if word in text_lower)
-            if matched > 0:
-                keyword_boost = 0.3 * (matched / len(query_words))
-        
-        # Add recency bias (approx 0.003 points per year)
-        recency_score = entry.timestamp / 1e10
-        
-        scores.append((i, semantic_score + keyword_boost + recency_score, keyword_boost > 0))
-    
-    scores.sort(key=lambda x: (x[2], x[1]), reverse=True)
-    
-    results = [
-        {
-            'timestamp': entries[idx].timestamp,
-            'text': entries[idx].text[:200]
-        }
-        for idx, score, has_keyword in scores[:20]
-    ]
-    
-    return jsonify(results)
+    results = search_entries_streaming(query_embedding, query_text=q, limit=20)
+
+    # API returns only timestamp + text preview
+    return jsonify([
+        {'timestamp': r['timestamp'], 'text': (r['text'] or '')[:200]}
+        for r in results
+    ])
 
 
 @app.route("/api/sync")
@@ -2410,7 +2382,7 @@ def api_sync():
     
     # Efficiently fetch only new entries using SQL filtering
     # This optimization prevents the server from reading the entire DB every 2 seconds
-    new_entries = get_all_entries(min_timestamp=since)
+    new_entries = get_entries_light(min_timestamp=since)
     
     if not new_entries:
         return jsonify({'timestamps': [], 'entries': {}})
@@ -2480,8 +2452,7 @@ def api_delete():
 def timeline():
     # connect to db
     timestamps = get_timestamps()
-    entries = get_all_entries()
-    # Convert entries to dict without embedding (numpy array)
+    entries = get_entries_light()
     entries_dict = {
         entry.timestamp: {
             'id': entry.id,
@@ -3031,55 +3002,23 @@ def search():
 {% endblock %}
 """)
     
-    entries = get_all_entries()
-    embeddings = [entry.embedding for entry in entries]
     query_embedding = get_embedding(q)
-    similarities = [cosine_similarity(query_embedding, emb) for emb in embeddings]
-    
-    # Create a hybrid score: semantic similarity + keyword match boost
-    query_lower = q.lower()
-    scores = []
-    for i, entry in enumerate(entries):
-        semantic_score = similarities[i]
-        
-        # Boost score if query keywords are found in text
-        text_lower = entry.text.lower()
-        keyword_boost = 0
-        
-        # Exact phrase match gets highest boost
-        if query_lower in text_lower:
-            keyword_boost = 0.5
-        else:
-            # Check individual words
-            query_words = query_lower.split()
-            matched_words = sum(1 for word in query_words if word in text_lower)
-            if matched_words > 0:
-                keyword_boost = 0.3 * (matched_words / len(query_words))
-        
-        # Add recency bias (approx 0.003 points per year)
-        recency_score = entry.timestamp / 1e10
-        
-        # Combined score
-        final_score = semantic_score + keyword_boost + recency_score
-        scores.append((i, final_score, keyword_boost > 0))
-    
-    # Sort by score, prioritizing entries with keyword matches
-    scores.sort(key=lambda x: (x[2], x[1]), reverse=True)
-    
-    # Convert entries to dict without embedding (numpy array)
-    sorted_entries = [
-        {
-            'id': entries[idx].id,
-            'app': entries[idx].app,
-            'title': entries[idx].title,
-            'text': entries[idx].text,
-            'timestamp': entries[idx].timestamp,
-            'words_coords': entries[idx].words_coords,
-            'ai_text': entries[idx].ai_text,
-            'ai_words_coords': entries[idx].ai_words_coords if entries[idx].ai_words_coords else []
-        }
-        for idx, score, has_keyword in scores
-    ]
+    search_results = search_entries_streaming(query_embedding, query_text=q, limit=50)
+
+    # Enrich results with words_coords for the classic search view
+    sorted_entries = []
+    for r in search_results:
+        entry = get_entry_by_timestamp(r['timestamp'])
+        sorted_entries.append({
+            'id': r['id'],
+            'app': r['app'],
+            'title': r['title'],
+            'text': r['text'],
+            'timestamp': r['timestamp'],
+            'words_coords': entry.words_coords if entry else [],
+            'ai_text': entry.ai_text if entry else None,
+            'ai_words_coords': entry.ai_words_coords if entry and entry.ai_words_coords else []
+        })
 
     return render_template_string(
         """
@@ -3274,8 +3213,7 @@ def ai_ocr():
             return jsonify({'error': 'Missing timestamp or api_key'}), 400
         
         # Find the entry
-        entries = get_all_entries()
-        entry = next((e for e in entries if e.timestamp == timestamp), None)
+        entry = get_entry_by_timestamp(timestamp)
         
         if not entry:
             return jsonify({'error': 'Entry not found'}), 404

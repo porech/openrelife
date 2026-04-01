@@ -1,3 +1,4 @@
+import heapq
 import sqlite3
 from collections import namedtuple
 import numpy as np
@@ -8,6 +9,9 @@ from openrelife.config import db_path
 
 # Define the structure of a database entry using namedtuple
 Entry = namedtuple("Entry", ["id", "app", "title", "text", "timestamp", "embedding", "words_coords", "ai_text", "ai_words_coords"])
+
+# Lightweight entry without embedding blob (for timeline/sync)
+LightEntry = namedtuple("LightEntry", ["id", "app", "title", "text", "timestamp", "words_coords", "ai_text", "ai_words_coords"])
 
 
 def create_db() -> None:
@@ -229,6 +233,130 @@ def delete_entries(timestamps: List[int]) -> int:
     return deleted_count
 
 
+
+
+def get_entries_light(limit: int = None, min_timestamp: int = 0) -> List[LightEntry]:
+    """Retrieves entries without embedding blob (saves ~1.5KB per entry)."""
+    entries: List[LightEntry] = []
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            query = "SELECT id, app, title, text, timestamp, words_coords, ai_text, ai_words_coords FROM entries WHERE timestamp > ? ORDER BY timestamp DESC"
+            params: list = [min_timestamp]
+
+            if limit:
+                query += " LIMIT ?"
+                params.append(limit)
+
+            cursor.execute(query, tuple(params))
+            for row in cursor:
+                words_coords_str = row["words_coords"] if row["words_coords"] else "[]"
+                try:
+                    words_coords = json.loads(words_coords_str)
+                except (json.JSONDecodeError, TypeError):
+                    words_coords = []
+
+                ai_words_coords_str = row["ai_words_coords"] if row["ai_words_coords"] else "[]"
+                try:
+                    ai_words_coords = json.loads(ai_words_coords_str)
+                except (json.JSONDecodeError, TypeError):
+                    ai_words_coords = []
+
+                entries.append(
+                    LightEntry(
+                        id=row["id"],
+                        app=row["app"],
+                        title=row["title"],
+                        text=row["text"],
+                        timestamp=row["timestamp"],
+                        words_coords=words_coords,
+                        ai_text=row["ai_text"],
+                        ai_words_coords=ai_words_coords,
+                    )
+                )
+    except sqlite3.Error as e:
+        print(f"Database error while fetching light entries: {e}")
+    return entries
+
+
+def search_entries_streaming(query_embedding: np.ndarray, query_text: str = "", limit: int = 20) -> List[dict]:
+    """Search entries using streaming cosine similarity — constant memory.
+
+    Iterates through all rows one at a time via a cursor, computes similarity
+    per-row, and keeps only the top-N results in a min-heap. Never loads all
+    entries into memory at once.
+
+    Returns a list of dicts sorted by final score descending.
+    """
+    query_norm = np.linalg.norm(query_embedding)
+    if query_norm == 0:
+        return []
+
+    query_lower = query_text.lower() if query_text else ""
+    query_words = query_lower.split() if query_lower else []
+
+    # Min-heap of (score, has_keyword, dict) — keeps top `limit` results
+    heap: list = []
+
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT id, app, title, text, timestamp, embedding FROM entries"
+            )
+
+            for row in cursor:
+                embedding = np.frombuffer(row["embedding"], dtype=np.float32)
+                emb_norm = np.linalg.norm(embedding)
+                if emb_norm == 0:
+                    continue
+
+                semantic_score = float(np.dot(query_embedding, embedding) / (query_norm * emb_norm))
+
+                keyword_boost = 0.0
+                if query_lower:
+                    text_lower = row["text"].lower() if row["text"] else ""
+                    if query_lower in text_lower:
+                        keyword_boost = 0.5
+                    elif query_words:
+                        matched = sum(1 for w in query_words if w in text_lower)
+                        if matched > 0:
+                            keyword_boost = 0.3 * (matched / len(query_words))
+
+                recency_score = row["timestamp"] / 1e10
+                final_score = semantic_score + keyword_boost + recency_score
+                has_keyword = keyword_boost > 0
+
+                # Heap key: (has_keyword, final_score) — we want highest first,
+                # but heapq is a min-heap, so we negate.
+                heap_key = (-int(has_keyword), -final_score)
+
+                if len(heap) < limit:
+                    heapq.heappush(heap, (heap_key, {
+                        'id': row["id"],
+                        'app': row["app"],
+                        'title': row["title"],
+                        'text': row["text"],
+                        'timestamp': row["timestamp"],
+                    }))
+                elif heap_key < heap[0][0]:
+                    heapq.heapreplace(heap, (heap_key, {
+                        'id': row["id"],
+                        'app': row["app"],
+                        'title': row["title"],
+                        'text': row["text"],
+                        'timestamp': row["timestamp"],
+                    }))
+
+    except sqlite3.Error as e:
+        print(f"Database error during streaming search: {e}")
+
+    # Sort results: best first (smallest heap_key = best)
+    results = sorted(heap, key=lambda x: x[0])
+    return [item[1] for item in results]
 
 
 def get_entry_by_timestamp(timestamp: int) -> Optional[Entry]:
