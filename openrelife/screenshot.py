@@ -271,6 +271,14 @@ def ocr_worker_thread():
     while True:
         timestamp, screenshot = _ocr_queue.get()
 
+        # Drain queue: if more items are waiting, skip to the latest
+        while not _ocr_queue.empty():
+            try:
+                timestamp, screenshot = _ocr_queue.get_nowait()
+                _ocr_queue.task_done()
+            except queue.Empty:
+                break
+
         try:
             text, words_coords = extract_text_from_image(screenshot)
             embedding = get_embedding(text) if text.strip() else np.zeros(384, dtype=np.float32)
