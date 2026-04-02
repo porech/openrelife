@@ -262,7 +262,7 @@ def record_screenshots_thread():
         _wait_with_incognito_check(screenshot_interval)
 
 
-OCR_COOLDOWN = 30  # seconds between OCR batches
+OCR_COOLDOWN = 90  # seconds between OCR batches
 
 
 def ocr_worker_thread():
