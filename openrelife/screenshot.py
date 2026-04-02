@@ -263,15 +263,21 @@ def record_screenshots_thread():
 
 
 def ocr_worker_thread():
-    """Background worker: processes OCR and embeddings from the queue."""
+    """Background worker: processes OCR and embeddings from the queue.
+
+    Drains the queue to only process the most recent frame, then waits
+    for the capture interval before checking again. This prevents the
+    worker from running back-to-back and hogging the CPU.
+    """
     import torch
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     torch.set_num_threads(4)
 
     while True:
+        # Block until at least one item is available
         timestamp, screenshot = _ocr_queue.get()
 
-        # Drain queue: if more items are waiting, skip to the latest
+        # Drain queue: skip to the latest frame
         while not _ocr_queue.empty():
             try:
                 timestamp, screenshot = _ocr_queue.get_nowait()
@@ -287,4 +293,9 @@ def ocr_worker_thread():
             print(f"OCR worker error for {timestamp}: {e}")
 
         _ocr_queue.task_done()
+
+        # Cooldown: wait before processing next frame to avoid constant CPU usage.
+        # During this pause new frames accumulate in the queue and get drained
+        # on the next iteration, so only the latest is processed.
+        time.sleep(screenshot_interval)
 
