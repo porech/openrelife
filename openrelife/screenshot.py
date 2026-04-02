@@ -262,40 +262,45 @@ def record_screenshots_thread():
         _wait_with_incognito_check(screenshot_interval)
 
 
-def ocr_worker_thread():
-    """Background worker: processes OCR and embeddings from the queue.
+OCR_COOLDOWN = 30  # seconds between OCR batches
 
-    Drains the queue to only process the most recent frame, then waits
-    for the capture interval before checking again. This prevents the
-    worker from running back-to-back and hogging the CPU.
+
+def ocr_worker_thread():
+    """Background worker: processes OCR in batches with cooldown periods.
+
+    Waits for frames to accumulate, then processes the entire batch,
+    then sleeps before the next cycle. This gives the CPU real rest
+    periods between bursts of work.
     """
     import torch
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     torch.set_num_threads(4)
 
     while True:
-        # Block until at least one item is available
-        timestamp, screenshot = _ocr_queue.get()
+        # Block until at least one item arrives
+        first_item = _ocr_queue.get()
 
-        # Drain queue: skip to the latest frame
+        # Wait for more frames to accumulate
+        time.sleep(OCR_COOLDOWN)
+
+        # Collect the entire batch
+        batch = [first_item]
         while not _ocr_queue.empty():
             try:
-                timestamp, screenshot = _ocr_queue.get_nowait()
-                _ocr_queue.task_done()
+                batch.append(_ocr_queue.get_nowait())
             except queue.Empty:
                 break
 
-        try:
-            text, words_coords = extract_text_from_image(screenshot)
-            embedding = get_embedding(text) if text.strip() else np.zeros(384, dtype=np.float32)
-            update_entry_ocr(timestamp, text, embedding, words_coords)
-        except Exception as e:
-            print(f"OCR worker error for {timestamp}: {e}")
+        # Process all frames in the batch
+        for timestamp, screenshot in batch:
+            try:
+                text, words_coords = extract_text_from_image(screenshot)
+                embedding = get_embedding(text) if text.strip() else np.zeros(384, dtype=np.float32)
+                update_entry_ocr(timestamp, text, embedding, words_coords)
+            except Exception as e:
+                print(f"OCR worker error for {timestamp}: {e}")
 
-        _ocr_queue.task_done()
-
-        # Cooldown: wait before processing next frame to avoid constant CPU usage.
-        # During this pause new frames accumulate in the queue and get drained
-        # on the next iteration, so only the latest is processed.
-        time.sleep(screenshot_interval)
+        # Mark all tasks as done
+        for _ in batch:
+            _ocr_queue.task_done()
 
