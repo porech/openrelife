@@ -55,19 +55,20 @@ def mean_structured_similarity_index(
     return ssim_index
 
 
+def _downscale_for_comparison(img: np.ndarray, max_height: int = 270) -> np.ndarray:
+    """Downscale image for fast MSSIM comparison."""
+    h, w = img.shape[:2]
+    if h <= max_height:
+        return img
+    scale = max_height / h
+    small = Image.fromarray(img).resize((int(w * scale), max_height), Image.NEAREST)
+    return np.array(small)
+
+
 def is_similar(
     img1: np.ndarray, img2: np.ndarray, similarity_threshold: float = 0.9
 ) -> bool:
-    """Checks if two images are similar based on MSSIM.
-
-    Args:
-        img1: The first image as a NumPy array.
-        img2: The second image as a NumPy array.
-        similarity_threshold: The threshold above which images are considered similar.
-
-    Returns:
-        True if the images are similar, False otherwise.
-    """
+    """Checks if two images are similar based on MSSIM."""
     similarity: float = mean_structured_similarity_index(img1, img2)
     return similarity >= similarity_threshold
 
@@ -192,7 +193,8 @@ def record_screenshots_thread():
 
     OCR/embedding processing happens in a separate worker thread.
     """
-    last_screenshots = take_screenshots()
+    # Keep only downscaled thumbnails for comparison (~270p instead of 4K)
+    last_thumbs = [_downscale_for_comparison(s) for s in take_screenshots()]
 
     while True:
         if is_recording_paused:
@@ -215,10 +217,10 @@ def record_screenshots_thread():
         screenshots = take_screenshots()
 
         for i, screenshot in enumerate(screenshots):
-            last_screenshot = last_screenshots[i]
+            thumb = _downscale_for_comparison(screenshot)
 
-            if not is_similar(screenshot, last_screenshot):
-                last_screenshots[i] = screenshot
+            if not is_similar(thumb, last_thumbs[i]):
+                last_thumbs[i] = thumb
 
                 # Save image to disk
                 image = Image.fromarray(screenshot)
