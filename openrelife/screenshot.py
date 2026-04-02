@@ -1,4 +1,5 @@
 import os
+import queue
 import time
 from typing import List, Tuple
 
@@ -7,7 +8,7 @@ import numpy as np
 from PIL import Image
 
 from openrelife.config import screenshots_path, args
-from openrelife.database import insert_entry
+from openrelife.database import insert_entry_stub, update_entry_ocr
 from openrelife.nlp import get_embedding
 from openrelife.ocr import extract_text_from_image
 from openrelife.utils import (
@@ -16,6 +17,9 @@ from openrelife.utils import (
     is_user_active,
     is_browser_incognito,
 )
+
+# Queue for pending OCR work: (timestamp, screenshot_array)
+_ocr_queue: queue.Queue = queue.Queue(maxsize=100)
 
 
 def mean_structured_similarity_index(
@@ -184,26 +188,22 @@ def _wait_with_incognito_check(seconds: float) -> bool:
 
 
 def record_screenshots_thread():
-    # TODO: fix the error from huggingface tokenizers
-    import os
+    """Capture thread: takes screenshots every N seconds, saves image + DB stub.
 
-    os.environ["TOKENIZERS_PARALLELISM"] = "false"
-
+    OCR/embedding processing happens in a separate worker thread.
+    """
     last_screenshots = take_screenshots()
 
     while True:
-        # Check if recording is manually paused
         if is_recording_paused:
             time.sleep(1)
             continue
 
-        # Avoid recording the recorder (OpenReLife itself)
         active_title = get_active_window_title()
         if active_title and "OpenReLife" in active_title:
             time.sleep(1)
             continue
 
-        # Check for incognito before taking screenshot
         if skip_incognito_recording and is_browser_incognito():
             time.sleep(1)
             continue
@@ -212,56 +212,69 @@ def record_screenshots_thread():
             time.sleep(3)
             continue
 
-        from datetime import datetime
-        #print(f"[{datetime.now().strftime('%H:%M:%S.%f')}] Acquiring screenshot (interval: {screenshot_interval}s)...")
         screenshots = take_screenshots()
 
         for i, screenshot in enumerate(screenshots):
-
             last_screenshot = last_screenshots[i]
 
             if not is_similar(screenshot, last_screenshot):
-                #print(f"[{datetime.now().strftime('%H:%M:%S.%f')}] Change detected! Saving screenshot {i}...")
                 last_screenshots[i] = screenshot
-                
-                # 1. Run OCR on full resolution image
-                text, words_coords = extract_text_from_image(screenshot)
-                
-                # 2. Resize and save image (Always save, regardless of text)
+
+                # Save image to disk
                 image = Image.fromarray(screenshot)
                 width, height = image.size
-                
-                # Quality Settings
+
                 if screenshot_quality == 'high':
-                    # No resize, lossless
                     save_kwargs = {'lossless': True}
                 elif screenshot_quality == 'medium':
-                    # 95% resize, 95 quality
                     image = image.resize((int(width * 0.95), int(height * 0.95)), Image.LANCZOS)
                     save_kwargs = {'lossless': False, 'quality': 95}
-                else: # low
-                    # 80% resize, 80 quality (default behavior)
+                else:
                     image = image.resize((int(width * 0.8), int(height * 0.8)), Image.LANCZOS)
                     save_kwargs = {'lossless': False, 'quality': 80}
-                
-                timestamp = int(time.time() * 1000000)  # microseconds
+
+                timestamp = int(time.time() * 1000000)
                 filename = f"{timestamp}.webp"
-                
                 image.save(
                     os.path.join(screenshots_path, filename),
                     format="webp",
                     **save_kwargs
                 )
-                
-                # 3. Create DB entry (even if text is empty)
-                embedding: np.ndarray = get_embedding(text) if text.strip() else np.zeros(384) # Zero embedding if no text
-                active_app_name: str = get_active_app_name() or "Unknown App"
-                active_window_title: str = get_active_window_title() or "Unknown Title"
-                
-                insert_entry(
-                    text, timestamp, embedding, active_app_name, active_window_title, words_coords
-                )
 
-        # Wait before taking the next screenshot, checking for incognito periodically
+                # Insert stub DB entry (no text/embedding yet)
+                active_app_name = get_active_app_name() or "Unknown App"
+                active_window_title = get_active_window_title() or "Unknown Title"
+                insert_entry_stub(timestamp, active_app_name, active_window_title)
+
+                # Queue screenshot for OCR processing
+                try:
+                    _ocr_queue.put_nowait((timestamp, screenshot))
+                except queue.Full:
+                    # Drop oldest item to make room
+                    try:
+                        _ocr_queue.get_nowait()
+                    except queue.Empty:
+                        pass
+                    _ocr_queue.put_nowait((timestamp, screenshot))
+
         _wait_with_incognito_check(screenshot_interval)
+
+
+def ocr_worker_thread():
+    """Background worker: processes OCR and embeddings from the queue."""
+    import torch
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    torch.set_num_threads(4)
+
+    while True:
+        timestamp, screenshot = _ocr_queue.get()
+
+        try:
+            text, words_coords = extract_text_from_image(screenshot)
+            embedding = get_embedding(text) if text.strip() else np.zeros(384, dtype=np.float32)
+            update_entry_ocr(timestamp, text, embedding, words_coords)
+        except Exception as e:
+            print(f"OCR worker error for {timestamp}: {e}")
+
+        _ocr_queue.task_done()
 

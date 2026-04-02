@@ -12,6 +12,7 @@ from openrelife.database import create_db, get_timestamps, update_ai_ocr, delete
 from openrelife.nlp import get_embedding
 from openrelife.screenshot import (
     record_screenshots_thread,
+    ocr_worker_thread,
     get_recording_paused,
     set_recording_paused,
     get_screenshot_interval,
@@ -3587,9 +3588,13 @@ if __name__ == "__main__":
     print(f"Appdata folder: {appdata_folder}")
     print(f"🚀 Starting OpenReLife on port {configured_port} (Production Mode)...")
 
-    # Start the thread to record screenshots
-    t = Thread(target=record_screenshots_thread)
+    # Start capture thread (fast, every 3s)
+    t = Thread(target=record_screenshots_thread, daemon=True)
     t.start()
+
+    # Start OCR worker thread (processes queue in background)
+    ocr_t = Thread(target=ocr_worker_thread, daemon=True)
+    ocr_t.start()
 
     # Use Waitress for production
     from waitress import serve

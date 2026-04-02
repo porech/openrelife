@@ -202,14 +202,50 @@ def insert_entry(
             conn.commit()
             if cursor.rowcount > 0: # Check if insert actually happened
                 last_row_id = cursor.lastrowid
-            # else:
-                # Optionally log that a duplicate timestamp was encountered
-                # print(f"Skipped inserting entry with duplicate timestamp: {timestamp}")
 
     except sqlite3.Error as e:
-        # More specific error handling can be added (e.g., IntegrityError for UNIQUE constraint)
         print(f"Database error during insertion: {e}")
     return last_row_id
+
+
+def insert_entry_stub(timestamp: int, app: str, title: str) -> Optional[int]:
+    """Insert a placeholder entry without text/embedding (filled later by OCR worker)."""
+    zero_embedding = np.zeros(384, dtype=np.float32).tobytes()
+    last_row_id: Optional[int] = None
+    try:
+        with sqlite3.connect(db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """INSERT INTO entries (text, timestamp, embedding, app, title, words_coords)
+                   VALUES ('', ?, ?, ?, ?, '[]')
+                   ON CONFLICT(timestamp) DO NOTHING""",
+                (timestamp, zero_embedding, app, title),
+            )
+            conn.commit()
+            if cursor.rowcount > 0:
+                last_row_id = cursor.lastrowid
+    except sqlite3.Error as e:
+        print(f"Database error during stub insertion: {e}")
+    return last_row_id
+
+
+def update_entry_ocr(timestamp: int, text: str, embedding: np.ndarray, words_coords: List = None) -> bool:
+    """Fill in OCR results for a previously inserted stub entry."""
+    embedding_bytes: bytes = embedding.astype(np.float32).tobytes()
+    words_coords_json: str = json.dumps(words_coords) if words_coords else "[]"
+    try:
+        with sqlite3.connect(db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """UPDATE entries SET text = ?, embedding = ?, words_coords = ?
+                   WHERE timestamp = ?""",
+                (text, embedding_bytes, words_coords_json, timestamp),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+    except sqlite3.Error as e:
+        print(f"Database error during OCR update: {e}")
+        return False
 
 
 def delete_entries(timestamps: List[int]) -> int:
