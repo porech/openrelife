@@ -8,7 +8,7 @@ from jinja2 import BaseLoader
 from PIL import Image
 
 from openrelife.config import appdata_folder, screenshots_path
-from openrelife.database import create_db, get_timestamps, update_ai_ocr, delete_entries, get_entry_by_timestamp, get_entries_light, search_entries_streaming
+from openrelife.database import create_db, get_timestamps, update_ai_ocr, delete_entries, get_entry_by_timestamp, get_entries_light, get_entries_metadata, search_entries_streaming
 from openrelife.nlp import get_embedding
 from openrelife.screenshot import (
     record_screenshots_thread,
@@ -416,19 +416,17 @@ def timeline_v2():
     if len(all_timestamps) > limit:
         # We still need all timestamps for the slider
         partial_timestamps = all_timestamps[:limit]
-        entries = get_entries_light(limit=limit)
+        entries = get_entries_metadata(limit=limit)
     else:
         partial_timestamps = all_timestamps
-        entries = get_entries_light()
+        entries = get_entries_metadata()
 
     entries_dict = {
         entry.timestamp: {
             'id': entry.id,
             'text': entry.text,
             'timestamp': entry.timestamp,
-            'words_coords': entry.words_coords,
             'ai_text': entry.ai_text,
-            'ai_words_coords': entry.ai_words_coords if entry.ai_words_coords else []
         }
         for entry in entries
     }
@@ -1780,9 +1778,24 @@ def timeline_v2():
       });
     }
     
-    function renderOverlay() {
+    async function ensureCoords(entry) {
+      if (entry.words_coords !== undefined) return;
+      try {
+        const resp = await fetch(`/api/entry-coords/${entry.timestamp}`);
+        const data = await resp.json();
+        entry.words_coords = data.words_coords || [];
+        entry.ai_words_coords = data.ai_words_coords || [];
+      } catch (e) {
+        entry.words_coords = [];
+        entry.ai_words_coords = [];
+      }
+    }
+
+    async function renderOverlay() {
       textOverlay.innerHTML = '';
-      if (!currentEntry || !currentEntry.words_coords) return;
+      if (!currentEntry) return;
+      await ensureCoords(currentEntry);
+      if (!currentEntry.words_coords || currentEntry.words_coords.length === 0) return;
       
       const w = screenshot.clientWidth;
       const h = screenshot.clientHeight;
@@ -2382,23 +2395,21 @@ def api_sync():
     
     # Efficiently fetch only new entries using SQL filtering
     # This optimization prevents the server from reading the entire DB every 2 seconds
-    new_entries = get_entries_light(min_timestamp=since)
-    
+    new_entries = get_entries_metadata(min_timestamp=since)
+
     if not new_entries:
         return jsonify({'timestamps': [], 'entries': {}})
-        
+
     # Timestamps (descending)
     new_timestamps = [e.timestamp for e in new_entries]
-    
-    # Entries dictionary
+
+    # Entries dictionary (no coords — loaded on demand via /api/entry-coords)
     new_entries_dict = {
         entry.timestamp: {
             'id': entry.id,
             'text': entry.text,
             'timestamp': entry.timestamp,
-            'words_coords': entry.words_coords,
             'ai_text': entry.ai_text,
-            'ai_words_coords': entry.ai_words_coords if entry.ai_words_coords else []
         }
         for entry in new_entries
     }
@@ -2413,6 +2424,18 @@ def api_sync():
 @app.route("/api/recording-status", methods=["GET"])
 def get_recording_status():
     return jsonify({"paused": get_recording_paused()})
+
+
+@app.route("/api/entry-coords/<int:timestamp>")
+def api_entry_coords(timestamp):
+    """Return words_coords for a single entry (on-demand loading)."""
+    entry = get_entry_by_timestamp(timestamp)
+    if not entry:
+        return jsonify({'words_coords': [], 'ai_words_coords': []}), 404
+    return jsonify({
+        'words_coords': entry.words_coords,
+        'ai_words_coords': entry.ai_words_coords if entry.ai_words_coords else []
+    })
 
 
 @app.route("/api/pause-recording", methods=["POST"])
@@ -2452,7 +2475,7 @@ def api_delete():
 def timeline():
     # connect to db
     timestamps = get_timestamps()
-    entries = get_entries_light()
+    entries = get_entries_metadata()
     entries_dict = {
         entry.timestamp: {
             'id': entry.id,
@@ -2460,9 +2483,7 @@ def timeline():
             'title': entry.title,
             'text': entry.text,
             'timestamp': entry.timestamp,
-            'words_coords': entry.words_coords,
             'ai_text': entry.ai_text,
-            'ai_words_coords': entry.ai_words_coords if entry.ai_words_coords else []
         }
         for entry in entries
     }
@@ -2587,8 +2608,21 @@ def timeline():
     const textPopup = document.getElementById('textPopup');
     const textPopupOverlay = document.getElementById('textPopupOverlay');
     const popupText = document.getElementById('popupText');
-    
+
     let currentEntry = null;
+
+    async function ensureCoords(entry) {
+      if (entry.words_coords !== undefined) return;
+      try {
+        const resp = await fetch(`/api/entry-coords/${entry.timestamp}`);
+        const data = await resp.json();
+        entry.words_coords = data.words_coords || [];
+        entry.ai_words_coords = data.ai_words_coords || [];
+      } catch (e) {
+        entry.words_coords = [];
+        entry.ai_words_coords = [];
+      }
+    }
 
     function groupWordsIntoBlocks(words) {
       if (!words || words.length === 0) return [];
@@ -2625,9 +2659,11 @@ def timeline():
       });
     }
 
-    function renderTextOverlay() {
+    async function renderTextOverlay() {
       textOverlay.innerHTML = '';
-      if (!showOverlayCheckbox.checked || !currentEntry || !currentEntry.words_coords || currentEntry.words_coords.length === 0) {
+      if (!showOverlayCheckbox.checked || !currentEntry) return;
+      await ensureCoords(currentEntry);
+      if (!currentEntry.words_coords || currentEntry.words_coords.length === 0) {
         return;
       }
       
@@ -2846,19 +2882,17 @@ def timeline():
       document.getElementById('btnAIOCR').classList.toggle('btn-primary', mode === 'ai');
       
       if (currentEntry) {
-        const original = entriesData[currentEntry.timestamp];
-        
-        if (mode === 'ai' && currentEntry.ai_text) {
-          extractedText.textContent = currentEntry.ai_text;
-          // Use AI coordinates if available, otherwise fallback to basic
-          currentEntry.words_coords = (currentEntry.ai_words_coords && currentEntry.ai_words_coords.length > 0) 
-            ? currentEntry.ai_words_coords 
-            : original.words_coords;
-        } else {
-          extractedText.textContent = currentEntry.text;
-          currentEntry.words_coords = original.words_coords;
-        }
-        renderTextOverlay();
+        ensureCoords(currentEntry).then(() => {
+          if (mode === 'ai' && currentEntry.ai_text) {
+            extractedText.textContent = currentEntry.ai_text;
+            currentEntry.words_coords = (currentEntry.ai_words_coords && currentEntry.ai_words_coords.length > 0)
+              ? currentEntry.ai_words_coords
+              : currentEntry.words_coords;
+          } else {
+            extractedText.textContent = currentEntry.text;
+          }
+          renderTextOverlay();
+        });
       }
     }
     
