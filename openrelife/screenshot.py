@@ -262,7 +262,15 @@ def record_screenshots_thread():
         _wait_with_incognito_check(screenshot_interval)
 
 
-OCR_COOLDOWN = 90  # seconds between OCR batches
+ocr_cooldown = 90  # seconds between OCR batches
+
+def set_ocr_cooldown(seconds: int):
+    global ocr_cooldown
+    ocr_cooldown = max(10, seconds)
+
+def get_ocr_cooldown() -> int:
+    global ocr_cooldown
+    return ocr_cooldown
 
 
 def ocr_worker_thread():
@@ -281,7 +289,7 @@ def ocr_worker_thread():
         first_item = _ocr_queue.get()
 
         # Wait for more frames to accumulate
-        time.sleep(OCR_COOLDOWN)
+        time.sleep(ocr_cooldown)
 
         # Collect the entire batch
         batch = [first_item]

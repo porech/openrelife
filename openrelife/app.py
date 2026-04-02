@@ -21,6 +21,8 @@ from openrelife.screenshot import (
     set_screenshot_quality,
     get_skip_incognito_recording,
     set_skip_incognito_recording,
+    get_ocr_cooldown,
+    set_ocr_cooldown,
 )
 from openrelife.utils import human_readable_time, timestamp_to_human_readable
 from openrelife.ai_ocr import get_ai_provider
@@ -40,6 +42,8 @@ def load_settings():
                     set_screenshot_quality(settings['screenshot_quality'])
                 if 'skip_incognito' in settings:
                     set_skip_incognito_recording(bool(settings['skip_incognito']))
+                if 'ocr_cooldown' in settings:
+                    set_ocr_cooldown(int(settings['ocr_cooldown']))
         except Exception as e:
             print(f"Error loading settings: {e}")
 
@@ -1211,7 +1215,7 @@ def timeline_v2():
             Screenshot Interval (seconds)
             <div class="tooltip-container">
               <i class="bi bi-question-circle" style="cursor: help; margin-left: 4px; color: rgba(255,255,255,0.4);"></i>
-              <span class="tooltip-text">The effective time between captures will be this interval <strong>PLUS</strong> the OCR processing time (usually 10-20s).</span>
+              <span class="tooltip-text">Time between screen captures. OCR runs separately in the background and does not affect capture speed.</span>
             </div>
           </label>
           <input type="text" inputmode="numeric" id="intervalInput" class="form-control" oninput="this.value = this.value.replace(/[^0-9]/g, ''); checkIntervalWarning(this.value)" style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: #fff; height: auto; padding: 0.375rem 0.75rem;">
@@ -1230,6 +1234,20 @@ def timeline_v2():
           </select>
           <small class="form-text text-muted" style="margin-top: 8px;">
             Higher quality will result in larger file sizes.
+          </small>
+        </div>
+
+        <div class="form-group" style="margin-top: 24px;">
+          <label>
+            OCR Processing Interval (seconds)
+            <div class="tooltip-container">
+              <i class="bi bi-question-circle" style="cursor: help; margin-left: 4px; color: rgba(255,255,255,0.4);"></i>
+              <span class="tooltip-text">How long to wait between OCR batches. Higher values reduce CPU usage but delay text extraction. Screenshots are always captured regardless of this setting.</span>
+            </div>
+          </label>
+          <input type="text" inputmode="numeric" id="ocrCooldownInput" class="form-control" oninput="this.value = this.value.replace(/[^0-9]/g, '')" style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: #fff; height: auto; padding: 0.375rem 0.75rem;">
+          <small class="form-text text-muted" style="margin-top: 8px;">
+            Default: 90s. Lower = faster text search, higher = less CPU usage.
           </small>
         </div>
 
@@ -2125,6 +2143,12 @@ def timeline_v2():
             .then(data => {
                 document.getElementById('qualitySelect').value = data.quality;
             });
+        // Load OCR cooldown
+        fetch('/api/settings/ocr-cooldown')
+            .then(r => r.json())
+            .then(data => {
+                document.getElementById('ocrCooldownInput').value = data.ocr_cooldown;
+            });
         // Load skip incognito
         fetch('/api/settings/skip_incognito')
             .then(r => r.json())
@@ -2163,6 +2187,7 @@ def timeline_v2():
                 retention_days: days,
                 interval: interval,
                 quality: document.getElementById('qualitySelect').value,
+                ocr_cooldown: document.getElementById('ocrCooldownInput').value,
                 skip_incognito: document.getElementById('skipIncognitoCheckbox').checked,
                 port: document.getElementById('portInput').value
             })
@@ -3378,6 +3403,31 @@ def api_settings_interval():
         return jsonify({'success': True})
 
 
+@app.route("/api/settings/ocr-cooldown", methods=["GET", "POST"])
+def api_settings_ocr_cooldown():
+    settings_path = os.path.join(appdata_folder, "settings.json")
+    import json
+    if request.method == "GET":
+        return jsonify({'ocr_cooldown': str(get_ocr_cooldown())})
+    else:
+        data = request.json
+        cooldown = int(data.get('ocr_cooldown', 90))
+        set_ocr_cooldown(cooldown)
+        settings = {}
+        if os.path.exists(settings_path):
+            try:
+                with open(settings_path, 'r') as f:
+                    content = f.read().strip()
+                    if content:
+                        settings = json.loads(content)
+            except Exception:
+                pass
+        settings['ocr_cooldown'] = cooldown
+        with open(settings_path, 'w') as f:
+            json.dump(settings, f)
+        return jsonify({'success': True})
+
+
 @app.route("/api/settings/quality", methods=["GET", "POST"])
 def api_settings_quality():
     settings_path = os.path.join(appdata_folder, "settings.json")
@@ -3526,6 +3576,12 @@ def api_update_settings():
         if quality in ['low', 'medium', 'high']:
             set_screenshot_quality(quality)
             settings['screenshot_quality'] = quality
+
+    # Update OCR Cooldown
+    if 'ocr_cooldown' in data:
+        cooldown = int(data['ocr_cooldown'])
+        set_ocr_cooldown(cooldown)
+        settings['ocr_cooldown'] = cooldown
 
     # Update Skip Incognito
     if 'skip_incognito' in data:
