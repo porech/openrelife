@@ -18,8 +18,8 @@ from openrelife.utils import (
     is_browser_incognito,
 )
 
-# Queue for pending OCR work: (timestamp, screenshot_array)
-_ocr_queue: queue.Queue = queue.Queue(maxsize=100)
+# Queue for pending OCR work: timestamps only (images read from disk on demand)
+_ocr_queue: queue.Queue = queue.Queue(maxsize=1000)
 
 
 def mean_structured_similarity_index(
@@ -248,16 +248,15 @@ def record_screenshots_thread():
                 active_window_title = get_active_window_title() or "Unknown Title"
                 insert_entry_stub(timestamp, active_app_name, active_window_title)
 
-                # Queue screenshot for OCR processing
+                # Queue timestamp for OCR processing (image read from disk later)
                 try:
-                    _ocr_queue.put_nowait((timestamp, screenshot))
+                    _ocr_queue.put_nowait(timestamp)
                 except queue.Full:
-                    # Drop oldest item to make room
                     try:
                         _ocr_queue.get_nowait()
                     except queue.Empty:
                         pass
-                    _ocr_queue.put_nowait((timestamp, screenshot))
+                    _ocr_queue.put_nowait(timestamp)
 
         _wait_with_incognito_check(screenshot_interval)
 
@@ -286,29 +285,38 @@ def ocr_worker_thread():
 
     while True:
         # Block until at least one item arrives
-        first_item = _ocr_queue.get()
+        first_ts = _ocr_queue.get()
 
         # Wait for more frames to accumulate
         time.sleep(ocr_cooldown)
 
-        # Collect the entire batch
-        batch = [first_item]
+        # Collect all pending timestamps
+        timestamps = [first_ts]
         while not _ocr_queue.empty():
             try:
-                batch.append(_ocr_queue.get_nowait())
+                timestamps.append(_ocr_queue.get_nowait())
             except queue.Empty:
                 break
 
-        # Process all frames in the batch
-        for timestamp, screenshot in batch:
+        # Process each frame: read image from disk, OCR, update DB
+        for ts in timestamps:
             try:
+                image_path = os.path.join(screenshots_path, f"{ts}.webp")
+                if not os.path.exists(image_path):
+                    continue
+                img = Image.open(image_path).convert("RGB")
+                screenshot = np.array(img)
+                del img  # Free PIL image immediately
+
                 text, words_coords = extract_text_from_image(screenshot)
+                del screenshot  # Free numpy array immediately
+
                 embedding = get_embedding(text) if text.strip() else np.zeros(384, dtype=np.float32)
-                update_entry_ocr(timestamp, text, embedding, words_coords)
+                update_entry_ocr(ts, text, embedding, words_coords)
             except Exception as e:
-                print(f"OCR worker error for {timestamp}: {e}")
+                print(f"OCR worker error for {ts}: {e}")
 
         # Mark all tasks as done
-        for _ in batch:
+        for _ in timestamps:
             _ocr_queue.task_done()
 
