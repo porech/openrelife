@@ -272,16 +272,41 @@ def get_ocr_cooldown() -> int:
     return ocr_cooldown
 
 
-def ocr_worker_thread():
-    """Background worker: processes OCR in batches with cooldown periods.
+def _process_ocr_batch(timestamps_list):
+    """Run OCR on a batch of timestamps in a subprocess.
 
-    Waits for frames to accumulate, then processes the entire batch,
-    then sleeps before the next cycle. This gives the CPU real rest
-    periods between bursts of work.
+    Runs in a separate process so that all memory (PyTorch, numpy arrays,
+    OCR models) is fully reclaimed by the OS when the process exits.
     """
     import torch
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     torch.set_num_threads(4)
+
+    for ts in timestamps_list:
+        try:
+            image_path = os.path.join(screenshots_path, f"{ts}.webp")
+            if not os.path.exists(image_path):
+                continue
+            img = Image.open(image_path).convert("RGB")
+            screenshot = np.array(img)
+            del img
+
+            text, words_coords = extract_text_from_image(screenshot)
+            del screenshot
+
+            embedding = get_embedding(text) if text.strip() else np.zeros(384, dtype=np.float32)
+            update_entry_ocr(ts, text, embedding, words_coords)
+        except Exception as e:
+            print(f"OCR worker error for {ts}: {e}")
+
+
+def ocr_worker_thread():
+    """Background worker: processes OCR in batches with cooldown periods.
+
+    Spawns a subprocess for each batch so memory is fully reclaimed
+    by the OS after processing (avoids Python heap fragmentation).
+    """
+    from multiprocessing import Process
 
     while True:
         # Block until at least one item arrives
@@ -298,23 +323,10 @@ def ocr_worker_thread():
             except queue.Empty:
                 break
 
-        # Process each frame: read image from disk, OCR, update DB
-        for ts in timestamps:
-            try:
-                image_path = os.path.join(screenshots_path, f"{ts}.webp")
-                if not os.path.exists(image_path):
-                    continue
-                img = Image.open(image_path).convert("RGB")
-                screenshot = np.array(img)
-                del img  # Free PIL image immediately
-
-                text, words_coords = extract_text_from_image(screenshot)
-                del screenshot  # Free numpy array immediately
-
-                embedding = get_embedding(text) if text.strip() else np.zeros(384, dtype=np.float32)
-                update_entry_ocr(ts, text, embedding, words_coords)
-            except Exception as e:
-                print(f"OCR worker error for {ts}: {e}")
+        # Process batch in a subprocess — all memory freed on exit
+        proc = Process(target=_process_ocr_batch, args=(timestamps,))
+        proc.start()
+        proc.join()
 
         # Mark all tasks as done
         for _ in timestamps:
