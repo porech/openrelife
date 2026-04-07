@@ -324,11 +324,18 @@ def ocr_worker_thread():
                 break
 
         # Process batch in a subprocess — all memory freed on exit
+        batch_start = time.time()
         proc = Process(target=_process_ocr_batch, args=(timestamps,))
         proc.start()
         proc.join()
+        batch_duration = time.time() - batch_start
 
         # Mark all tasks as done
         for _ in timestamps:
             _ocr_queue.task_done()
+
+        # Adaptive cooldown: rest at least as long as the batch took,
+        # so the CPU duty cycle never exceeds 50%
+        effective_cooldown = max(ocr_cooldown, batch_duration)
+        time.sleep(effective_cooldown)
 
