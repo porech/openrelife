@@ -272,7 +272,17 @@ def get_ocr_cooldown() -> int:
     return ocr_cooldown
 
 
-def _process_ocr_batch(timestamps_list):
+def _is_on_ac_power() -> bool:
+    """Check if the Mac is plugged in."""
+    try:
+        import subprocess
+        output = subprocess.check_output(["pmset", "-g", "batt"], timeout=2).decode()
+        return "AC Power" in output
+    except Exception:
+        return False
+
+
+def _process_ocr_batch(timestamps_list, num_threads=4):
     """Run OCR on a batch of timestamps in a subprocess.
 
     Runs in a separate process so that all memory (PyTorch, numpy arrays,
@@ -280,7 +290,7 @@ def _process_ocr_batch(timestamps_list):
     """
     import torch
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
-    torch.set_num_threads(4)
+    torch.set_num_threads(num_threads)
 
     for ts in timestamps_list:
         try:
@@ -300,11 +310,20 @@ def _process_ocr_batch(timestamps_list):
             print(f"OCR worker error for {ts}: {e}")
 
 
+# Batch size limits per power mode
+BATCH_SIZE_BATTERY = 5
+BATCH_SIZE_AC_ACTIVE = 10
+THREADS_NORMAL = 4
+THREADS_IDLE_AC = 2
+
+
 def ocr_worker_thread():
     """Background worker: processes OCR in batches with cooldown periods.
 
-    Spawns a subprocess for each batch so memory is fully reclaimed
-    by the OS after processing (avoids Python heap fragmentation).
+    Adapts behavior based on power state:
+    - Battery: small batches (5), normal threads, adaptive cooldown
+    - AC + active: medium batches (10), normal threads, adaptive cooldown
+    - AC + idle: full backlog, fewer threads (2) to avoid overheating
     """
     from multiprocessing import Process
 
@@ -316,26 +335,50 @@ def ocr_worker_thread():
         time.sleep(ocr_cooldown)
 
         # Collect all pending timestamps
-        timestamps = [first_ts]
+        pending = [first_ts]
         while not _ocr_queue.empty():
             try:
-                timestamps.append(_ocr_queue.get_nowait())
+                pending.append(_ocr_queue.get_nowait())
             except queue.Empty:
+                break
+
+        # Determine power mode
+        on_ac = _is_on_ac_power()
+        user_active = is_user_active()
+
+        if on_ac and not user_active:
+            # Idle + charging: process entire backlog with throttled CPU
+            batch = pending
+            threads = THREADS_IDLE_AC
+        elif on_ac:
+            # Active + charging: medium batch
+            batch = pending[:BATCH_SIZE_AC_ACTIVE]
+            threads = THREADS_NORMAL
+        else:
+            # Battery: small batch
+            batch = pending[:BATCH_SIZE_BATTERY]
+            threads = THREADS_NORMAL
+
+        # Put back any unprocessed timestamps
+        overflow = pending[len(batch):]
+        for ts in overflow:
+            try:
+                _ocr_queue.put_nowait(ts)
+            except queue.Full:
                 break
 
         # Process batch in a subprocess — all memory freed on exit
         batch_start = time.time()
-        proc = Process(target=_process_ocr_batch, args=(timestamps,))
+        proc = Process(target=_process_ocr_batch, args=(batch, threads))
         proc.start()
         proc.join()
         batch_duration = time.time() - batch_start
 
-        # Mark all tasks as done
-        for _ in timestamps:
+        # Mark processed tasks as done
+        for _ in batch:
             _ocr_queue.task_done()
 
-        # Adaptive cooldown: rest at least as long as the batch took,
-        # so the CPU duty cycle never exceeds 50%
+        # Adaptive cooldown: rest at least as long as the batch took
         effective_cooldown = max(ocr_cooldown, batch_duration)
         time.sleep(effective_cooldown)
 
