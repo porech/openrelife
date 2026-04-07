@@ -23,6 +23,8 @@ from openrelife.screenshot import (
     set_skip_incognito_recording,
     get_ocr_cooldown,
     set_ocr_cooldown,
+    get_ocr_compute_mode,
+    set_ocr_compute_mode,
 )
 from openrelife.utils import human_readable_time, timestamp_to_human_readable
 from openrelife.ai_ocr import get_ai_provider
@@ -44,6 +46,8 @@ def load_settings():
                     set_skip_incognito_recording(bool(settings['skip_incognito']))
                 if 'ocr_cooldown' in settings:
                     set_ocr_cooldown(int(settings['ocr_cooldown']))
+                if 'ocr_compute_mode' in settings:
+                    set_ocr_compute_mode(settings['ocr_compute_mode'])
         except Exception as e:
             print(f"Error loading settings: {e}")
 
@@ -1252,6 +1256,26 @@ def timeline_v2():
         </div>
 
         <div class="form-group" style="margin-top: 24px;">
+          <label>
+            OCR Compute Mode
+            <div class="tooltip-container">
+              <i class="bi bi-question-circle" style="cursor: help; margin-left: 4px; color: rgba(255,255,255,0.4);"></i>
+              <span class="tooltip-text">Controls how aggressively OCR processes screenshots. Affects CPU usage and how quickly text becomes searchable.</span>
+            </div>
+          </label>
+          <select id="ocrComputeModeSelect" class="form-control" style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: #fff; height: auto; padding: 0.375rem 0.75rem;">
+            <option value="aggressive">Aggressive — large batches, short cooldown, always runs</option>
+            <option value="smart" selected>Smart — adapts to battery/charging/idle state</option>
+            <option value="on_charge_only">On Charge Only — no OCR on battery, recovers when plugged in</option>
+          </select>
+          <small class="form-text text-muted" style="margin-top: 8px;">
+            <strong>Aggressive:</strong> fastest text availability, highest CPU usage.<br>
+            <strong>Smart:</strong> small batches on battery, medium on charge, full recovery when idle+charging.<br>
+            <strong>On Charge Only:</strong> zero CPU impact on battery, processes backlog when plugged in.
+          </small>
+        </div>
+
+        <div class="form-group" style="margin-top: 24px;">
           <label style="display: flex; align-items: center; cursor: pointer;">
             <input type="checkbox" id="skipIncognitoCheckbox" checked style="width: 18px; height: 18px; margin-right: 10px; accent-color: #0d6efd;">
             Skip recording in incognito/private mode
@@ -2149,6 +2173,12 @@ def timeline_v2():
             .then(data => {
                 document.getElementById('ocrCooldownInput').value = data.ocr_cooldown;
             });
+        // Load OCR compute mode
+        fetch('/api/settings/ocr-compute-mode')
+            .then(r => r.json())
+            .then(data => {
+                document.getElementById('ocrComputeModeSelect').value = data.ocr_compute_mode;
+            });
         // Load skip incognito
         fetch('/api/settings/skip_incognito')
             .then(r => r.json())
@@ -2188,6 +2218,7 @@ def timeline_v2():
                 interval: interval,
                 quality: document.getElementById('qualitySelect').value,
                 ocr_cooldown: document.getElementById('ocrCooldownInput').value,
+                ocr_compute_mode: document.getElementById('ocrComputeModeSelect').value,
                 skip_incognito: document.getElementById('skipIncognitoCheckbox').checked,
                 port: document.getElementById('portInput').value
             })
@@ -3428,6 +3459,31 @@ def api_settings_ocr_cooldown():
         return jsonify({'success': True})
 
 
+@app.route("/api/settings/ocr-compute-mode", methods=["GET", "POST"])
+def api_settings_ocr_compute_mode():
+    settings_path = os.path.join(appdata_folder, "settings.json")
+    import json
+    if request.method == "GET":
+        return jsonify({'ocr_compute_mode': get_ocr_compute_mode()})
+    else:
+        data = request.json
+        mode = data.get('ocr_compute_mode', 'smart')
+        set_ocr_compute_mode(mode)
+        settings = {}
+        if os.path.exists(settings_path):
+            try:
+                with open(settings_path, 'r') as f:
+                    content = f.read().strip()
+                    if content:
+                        settings = json.loads(content)
+            except Exception:
+                pass
+        settings['ocr_compute_mode'] = mode
+        with open(settings_path, 'w') as f:
+            json.dump(settings, f)
+        return jsonify({'success': True})
+
+
 @app.route("/api/settings/quality", methods=["GET", "POST"])
 def api_settings_quality():
     settings_path = os.path.join(appdata_folder, "settings.json")
@@ -3582,6 +3638,12 @@ def api_update_settings():
         cooldown = int(data['ocr_cooldown'])
         set_ocr_cooldown(cooldown)
         settings['ocr_cooldown'] = cooldown
+
+    # Update OCR Compute Mode
+    if 'ocr_compute_mode' in data:
+        mode = data['ocr_compute_mode']
+        set_ocr_compute_mode(mode)
+        settings['ocr_compute_mode'] = mode
 
     # Update Skip Incognito
     if 'skip_incognito' in data:

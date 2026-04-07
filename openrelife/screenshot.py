@@ -272,12 +272,35 @@ def get_ocr_cooldown() -> int:
     return ocr_cooldown
 
 
+# OCR compute mode: aggressive, smart (default), on_charge_only
+ocr_compute_mode = "smart"
+
+def set_ocr_compute_mode(mode: str):
+    global ocr_compute_mode
+    if mode in ("aggressive", "smart", "on_charge_only"):
+        ocr_compute_mode = mode
+
+def get_ocr_compute_mode() -> str:
+    global ocr_compute_mode
+    return ocr_compute_mode
+
+
 def _is_on_ac_power() -> bool:
     """Check if the Mac is plugged in."""
     try:
         import subprocess
         output = subprocess.check_output(["pmset", "-g", "batt"], timeout=2).decode()
         return "AC Power" in output
+    except Exception:
+        return False
+
+
+def _has_battery() -> bool:
+    """Check if this device has a battery (laptop vs desktop)."""
+    try:
+        import subprocess
+        output = subprocess.check_output(["pmset", "-g", "batt"], timeout=2).decode()
+        return "InternalBattery" in output
     except Exception:
         return False
 
@@ -310,20 +333,53 @@ def _process_ocr_batch(timestamps_list, num_threads=4):
             print(f"OCR worker error for {ts}: {e}")
 
 
-# Batch size limits per power mode
-BATCH_SIZE_BATTERY = 5
-BATCH_SIZE_AC_ACTIVE = 10
-THREADS_NORMAL = 4
-THREADS_IDLE_AC = 2
+def _get_batch_params(pending_count: int) -> tuple:
+    """Determine batch size and thread count based on compute mode and power state.
+
+    Returns (max_batch_size, num_threads, cooldown_multiplier).
+    cooldown_multiplier: 1.0 = use configured cooldown, 0.3 = aggressive short cooldown.
+    """
+    on_ac = _is_on_ac_power()
+    has_bat = _has_battery()
+    user_active = is_user_active()
+    on_battery = has_bat and not on_ac
+
+    mode = ocr_compute_mode
+
+    if mode == "aggressive":
+        # Always high throughput regardless of power
+        return (20, 4, 0.3)
+
+    if mode == "on_charge_only":
+        if on_battery:
+            return (0, 0, 1.0)  # No OCR on battery
+        if not user_active:
+            return (pending_count, 2, 1.0)  # Idle+AC: full backlog, throttled
+        return (10, 4, 1.0)  # AC+active: medium batch
+
+    # smart (default)
+    if not has_bat:
+        # Desktop (always AC): behave like AC+active
+        return (10, 4, 1.0)
+    if on_battery:
+        return (5, 4, 1.0)
+    if not user_active:
+        # AC + idle: full backlog, throttled
+        return (pending_count, 2, 1.0)
+    # AC + active
+    return (10, 4, 1.0)
 
 
 def ocr_worker_thread():
     """Background worker: processes OCR in batches with cooldown periods.
 
-    Adapts behavior based on power state:
-    - Battery: small batches (5), normal threads, adaptive cooldown
-    - AC + active: medium batches (10), normal threads, adaptive cooldown
-    - AC + idle: full backlog, fewer threads (2) to avoid overheating
+    Spawns a subprocess for each batch so memory is fully reclaimed
+    by the OS after processing (avoids Python heap fragmentation).
+
+    Compute modes:
+    - aggressive: large batches (20), short cooldown, always runs
+    - smart (default): adapts to battery/AC/idle state
+    - on_charge_only: skips OCR on battery, recovers when plugged in
     """
     from multiprocessing import Process
 
@@ -342,25 +398,22 @@ def ocr_worker_thread():
             except queue.Empty:
                 break
 
-        # Determine power mode
-        on_ac = _is_on_ac_power()
-        user_active = is_user_active()
+        max_batch, threads, cooldown_mult = _get_batch_params(len(pending))
 
-        if on_ac and not user_active:
-            # Idle + charging: process entire backlog with throttled CPU
-            batch = pending
-            threads = THREADS_IDLE_AC
-        elif on_ac:
-            # Active + charging: medium batch
-            batch = pending[:BATCH_SIZE_AC_ACTIVE]
-            threads = THREADS_NORMAL
-        else:
-            # Battery: small batch
-            batch = pending[:BATCH_SIZE_BATTERY]
-            threads = THREADS_NORMAL
+        if max_batch == 0:
+            # on_charge_only + battery: put everything back, wait
+            for ts in pending:
+                try:
+                    _ocr_queue.put_nowait(ts)
+                except queue.Full:
+                    break
+            _ocr_queue.task_done()  # for first_ts
+            continue
+
+        batch = pending[:max_batch]
 
         # Put back any unprocessed timestamps
-        overflow = pending[len(batch):]
+        overflow = pending[max_batch:]
         for ts in overflow:
             try:
                 _ocr_queue.put_nowait(ts)
@@ -379,6 +432,6 @@ def ocr_worker_thread():
             _ocr_queue.task_done()
 
         # Adaptive cooldown: rest at least as long as the batch took
-        effective_cooldown = max(ocr_cooldown, batch_duration)
+        effective_cooldown = max(ocr_cooldown * cooldown_mult, batch_duration)
         time.sleep(effective_cooldown)
 
