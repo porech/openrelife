@@ -452,7 +452,12 @@ def ocr_worker_thread():
         for _ in batch:
             _ocr_queue.task_done()
 
-        # Adaptive cooldown: rest at least as long as the batch took
-        effective_cooldown = max(ocr_cooldown * cooldown_mult, batch_duration)
+        # Cooldown between batches.
+        # In boost mode (cooldown_mult < 1.0): use short fixed cooldown
+        # In normal mode: rest at least as long as the batch took
+        if cooldown_mult < 1.0:
+            effective_cooldown = ocr_cooldown * cooldown_mult
+        else:
+            effective_cooldown = max(ocr_cooldown, batch_duration)
         time.sleep(effective_cooldown)
 
