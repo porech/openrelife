@@ -385,7 +385,7 @@ def _get_batch_params(pending_count: int) -> tuple:
     if on_battery:
         return (5, 4, 1.0)
     if battery_full:
-        return (20, 4, 0.5)
+        return (20, 4, 0.15)
     if not user_active:
         return (pending_count, 2, 1.0)
     return (10, 4, 1.0)
