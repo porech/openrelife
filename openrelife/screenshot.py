@@ -349,11 +349,10 @@ def _process_ocr_batch(timestamps_list, num_threads=4):
 
 
 def _get_batch_params(pending_count: int) -> tuple:
-    """Determine batch size, thread count, cooldown multiplier, and sampling rate.
+    """Determine batch size, thread count, and cooldown multiplier.
 
-    Returns (max_batch_size, num_threads, cooldown_multiplier, sample_every_n).
-    - cooldown_multiplier: 1.0 = use configured cooldown, 0.3 = aggressive short cooldown.
-    - sample_every_n: 1 = process all, 3 = process 1 every 3 (skip 2).
+    Returns (max_batch_size, num_threads, cooldown_multiplier).
+    cooldown_multiplier: 1.0 = use configured cooldown, 0.3 = aggressive short cooldown.
     """
     on_ac = _is_on_ac_power()
     has_bat = _has_battery()
@@ -364,29 +363,27 @@ def _get_batch_params(pending_count: int) -> tuple:
     mode = ocr_compute_mode
 
     if mode == "aggressive":
-        return (20, 4, 0.3, 1)
+        return (20, 4, 0.3)
 
     if mode == "on_charge_only":
         if on_battery:
-            return (0, 0, 1.0, 1)
+            return (0, 0, 1.0)
         if battery_full:
-            return (20, 4, 0.5, 3)  # Double power when full + AC
+            return (20, 4, 0.5)
         if not user_active:
-            return (pending_count, 2, 1.0, 3)
-        return (10, 4, 1.0, 3)
+            return (pending_count, 2, 1.0)
+        return (10, 4, 1.0)
 
     # smart (default)
     if not has_bat:
-        return (10, 4, 1.0, 3)
+        return (10, 4, 1.0)
     if on_battery:
-        return (5, 4, 1.0, 3)
+        return (5, 4, 1.0)
     if battery_full:
-        # AC + 100% battery: double power for backlog recovery
-        return (20, 4, 0.5, 3)
+        return (20, 4, 0.5)
     if not user_active:
-        return (pending_count, 2, 1.0, 3)
-    # AC + active
-    return (10, 4, 1.0, 3)
+        return (pending_count, 2, 1.0)
+    return (10, 4, 1.0)
 
 
 def ocr_worker_thread():
@@ -417,7 +414,7 @@ def ocr_worker_thread():
             except queue.Empty:
                 break
 
-        max_batch, threads, cooldown_mult, sample_n = _get_batch_params(len(pending))
+        max_batch, threads, cooldown_mult = _get_batch_params(len(pending))
 
         if max_batch == 0:
             # on_charge_only + battery: put everything back, wait
@@ -429,18 +426,10 @@ def ocr_worker_thread():
             _ocr_queue.task_done()  # for first_ts
             continue
 
-        # Apply sampling: pick 1 every sample_n frames, up to max_batch
-        if sample_n > 1 and len(pending) > max_batch:
-            sampled = pending[::sample_n][:max_batch]
-        else:
-            sampled = pending[:max_batch]
+        batch = pending[:max_batch]
 
-        batch = sampled
-
-        # Put back only unsampled timestamps that weren't picked
-        # (sampled ones get processed, the rest are discarded — their
-        # screenshots remain in timeline but without searchable text)
-        overflow = pending[max(len(batch) * sample_n, len(batch)):]
+        # Put back unprocessed timestamps for next cycle
+        overflow = pending[max_batch:]
         for ts in overflow:
             try:
                 _ocr_queue.put_nowait(ts)
