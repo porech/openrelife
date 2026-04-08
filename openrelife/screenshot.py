@@ -336,6 +336,11 @@ def _process_ocr_batch(timestamps_list, num_threads=4):
             if not os.path.exists(image_path):
                 continue
             img = Image.open(image_path).convert("RGB")
+            # Downscale to 1080p for OCR — same text quality, ~3x faster
+            w, h = img.size
+            if h > 1080:
+                scale = 1080 / h
+                img = img.resize((int(w * scale), 1080), Image.LANCZOS)
             screenshot = np.array(img)
             del img
 
