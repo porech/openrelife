@@ -416,7 +416,7 @@ def _get_batch_params(pending_count: int) -> tuple:
         if battery_full:
             return (20, 4, 0.5)
         if not user_active:
-            return (pending_count, 2, 1.0)
+            return (min(pending_count, 50), 2, 1.0)
         return (10, 4, 1.0)
 
     # smart (default)
@@ -425,10 +425,10 @@ def _get_batch_params(pending_count: int) -> tuple:
     if on_battery:
         return (5, 4, 1.0)
     if not user_active:
-        # Idle + AC: full backlog recovery, throttled to avoid heat
+        # Idle + AC: larger batches for recovery, but capped to avoid hung subprocess
         if battery_full:
-            return (pending_count, 4, 0.15)
-        return (pending_count, 2, 1.0)
+            return (min(pending_count, 50), 4, 0.15)
+        return (min(pending_count, 50), 2, 1.0)
     if battery_full:
         # AC + active + 100%: slightly faster than normal, but not aggressive
         return (15, 4, 0.5)
