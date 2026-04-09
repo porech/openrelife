@@ -274,6 +274,21 @@ def delete_entries(timestamps: List[int]) -> int:
 
 
 
+def get_pending_ocr_timestamps() -> List[int]:
+    """Returns timestamps of entries that have no OCR text (stub entries)."""
+    timestamps: List[int] = []
+    try:
+        with sqlite3.connect(db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT timestamp FROM entries WHERE text = '' OR text IS NULL ORDER BY timestamp ASC"
+            )
+            timestamps = [row[0] for row in cursor]
+    except sqlite3.Error as e:
+        print(f"Database error while fetching pending OCR timestamps: {e}")
+    return timestamps
+
+
 def get_entries_metadata(limit: int = None, min_timestamp: int = 0) -> List[MetadataEntry]:
     """Retrieves entries without embedding or coords — only ~1KB per entry."""
     entries: List[MetadataEntry] = []

@@ -10,7 +10,7 @@ import numpy as np
 from PIL import Image
 
 from openrelife.config import appdata_folder, screenshots_path, args
-from openrelife.database import insert_entry_stub, update_entry_ocr
+from openrelife.database import insert_entry_stub, update_entry_ocr, get_pending_ocr_timestamps
 from openrelife.nlp import get_embedding
 from openrelife.ocr import extract_text_from_image
 from openrelife.utils import (
@@ -444,6 +444,17 @@ def ocr_worker_thread():
     """
     from multiprocessing import Process
     _logger.info("OCR worker thread started")
+
+    # On startup, re-queue any orphaned stub entries (text='') from previous sessions
+    orphans = get_pending_ocr_timestamps()
+    if orphans:
+        _logger.info(f"Found {len(orphans)} orphaned entries without OCR, re-queuing")
+        for ts in orphans:
+            try:
+                _ocr_queue.put_nowait(ts)
+            except queue.Full:
+                _logger.warning(f"Queue full, {len(orphans) - orphans.index(ts)} orphans not queued")
+                break
 
     while True:
         # Block until at least one item arrives
