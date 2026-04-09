@@ -1,3 +1,5 @@
+import logging
+import logging.handlers
 import os
 import queue
 import time
@@ -7,7 +9,7 @@ import mss
 import numpy as np
 from PIL import Image
 
-from openrelife.config import screenshots_path, args
+from openrelife.config import appdata_folder, screenshots_path, args
 from openrelife.database import insert_entry_stub, update_entry_ocr
 from openrelife.nlp import get_embedding
 from openrelife.ocr import extract_text_from_image
@@ -17,6 +19,16 @@ from openrelife.utils import (
     is_user_active,
     is_browser_incognito,
 )
+
+# File logger for capture/OCR diagnostics
+_log_path = os.path.join(appdata_folder, "capture.log")
+_logger = logging.getLogger("openrelife.capture")
+_logger.setLevel(logging.DEBUG)
+_file_handler = logging.handlers.RotatingFileHandler(
+    _log_path, maxBytes=2 * 1024 * 1024, backupCount=3
+)
+_file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+_logger.addHandler(_file_handler)
 
 # Queue for pending OCR work: timestamps only (images read from disk on demand)
 _ocr_queue: queue.Queue = queue.Queue(maxsize=1000)
@@ -193,12 +205,25 @@ def record_screenshots_thread():
 
     OCR/embedding processing happens in a separate worker thread.
     """
+    _logger.info("Capture thread started")
+    cycle_count = 0
+    saved_count = 0
+
     # Keep only downscaled thumbnails for comparison (~270p instead of 4K)
-    last_thumbs = [_downscale_for_comparison(s) for s in take_screenshots()]
+    try:
+        last_thumbs = [_downscale_for_comparison(s) for s in take_screenshots()]
+        _logger.info(f"Initial screenshots taken, {len(last_thumbs)} monitor(s)")
+    except Exception as e:
+        _logger.error(f"Failed to take initial screenshots: {e}")
+        last_thumbs = None
 
     while True:
         try:
+            cycle_count += 1
+
             if is_recording_paused:
+                if cycle_count % 60 == 0:
+                    _logger.debug("Recording paused")
                 time.sleep(1)
                 continue
 
@@ -208,14 +233,22 @@ def record_screenshots_thread():
                 continue
 
             if skip_incognito_recording and is_browser_incognito():
+                if cycle_count % 60 == 0:
+                    _logger.debug("Incognito mode detected, skipping")
                 time.sleep(1)
                 continue
 
             if not is_user_active():
+                if cycle_count % 60 == 0:
+                    _logger.debug("User inactive")
                 time.sleep(3)
                 continue
 
             screenshots = take_screenshots()
+
+            if last_thumbs is None or len(last_thumbs) != len(screenshots):
+                _logger.info(f"Reinitializing thumbnails ({len(screenshots)} monitors)")
+                last_thumbs = [_downscale_for_comparison(s) for s in screenshots]
 
             for i, screenshot in enumerate(screenshots):
                 thumb = _downscale_for_comparison(screenshot)
@@ -223,7 +256,6 @@ def record_screenshots_thread():
                 if not is_similar(thumb, last_thumbs[i]):
                     last_thumbs[i] = thumb
 
-                    # Save image to disk
                     image = Image.fromarray(screenshot)
                     width, height = image.size
 
@@ -244,12 +276,10 @@ def record_screenshots_thread():
                         **save_kwargs
                     )
 
-                    # Insert stub DB entry (no text/embedding yet)
                     active_app_name = get_active_app_name() or "Unknown App"
                     active_window_title = get_active_window_title() or "Unknown Title"
                     insert_entry_stub(timestamp, active_app_name, active_window_title)
 
-                    # Queue timestamp for OCR processing (image read from disk later)
                     try:
                         _ocr_queue.put_nowait(timestamp)
                     except queue.Full:
@@ -259,11 +289,15 @@ def record_screenshots_thread():
                             pass
                         _ocr_queue.put_nowait(timestamp)
 
+                    saved_count += 1
+                    if saved_count % 10 == 0:
+                        _logger.info(f"Saved {saved_count} screenshots (queue: {_ocr_queue.qsize()})")
+
             _wait_with_incognito_check(screenshot_interval)
 
         except Exception as e:
-            # Survive errors (e.g. mss failing after macOS sleep/wake)
-            print(f"Capture thread error (retrying in 5s): {e}")
+            _logger.error(f"Capture thread error (retrying in 5s): {e}", exc_info=True)
+            last_thumbs = None  # Force reinit on next cycle
             time.sleep(5)
 
 
@@ -409,12 +443,14 @@ def ocr_worker_thread():
     - on_charge_only: skips OCR on battery, recovers when plugged in
     """
     from multiprocessing import Process
+    _logger.info("OCR worker thread started")
 
     while True:
         # Block until at least one item arrives
         first_ts = _ocr_queue.get()
 
         # Wait for more frames to accumulate
+        _logger.debug(f"OCR worker: first item received, waiting {ocr_cooldown}s for batch")
         time.sleep(ocr_cooldown)
 
         # Collect all pending timestamps
@@ -426,6 +462,7 @@ def ocr_worker_thread():
                 break
 
         max_batch, threads, cooldown_mult = _get_batch_params(len(pending))
+        _logger.info(f"OCR batch: {len(pending)} pending, max_batch={max_batch}, threads={threads}, cooldown_mult={cooldown_mult}, mode={ocr_compute_mode}")
 
         if max_batch == 0:
             # on_charge_only + battery: put everything back, wait
@@ -448,11 +485,13 @@ def ocr_worker_thread():
                 break
 
         # Process batch in a subprocess — all memory freed on exit
+        _logger.info(f"OCR subprocess starting: {len(batch)} frames, {threads} threads")
         batch_start = time.time()
         proc = Process(target=_process_ocr_batch, args=(batch, threads))
         proc.start()
         proc.join()
         batch_duration = time.time() - batch_start
+        _logger.info(f"OCR subprocess done: {len(batch)} frames in {batch_duration:.0f}s ({batch_duration/len(batch):.1f}s/frame), overflow={len(overflow)}")
 
         # Mark processed tasks as done
         for _ in batch:
@@ -465,5 +504,6 @@ def ocr_worker_thread():
             effective_cooldown = ocr_cooldown * cooldown_mult
         else:
             effective_cooldown = max(ocr_cooldown, batch_duration)
+        _logger.info(f"OCR cooldown: {effective_cooldown:.0f}s (mult={cooldown_mult})")
         time.sleep(effective_cooldown)
 
