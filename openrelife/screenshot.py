@@ -197,68 +197,74 @@ def record_screenshots_thread():
     last_thumbs = [_downscale_for_comparison(s) for s in take_screenshots()]
 
     while True:
-        if is_recording_paused:
-            time.sleep(1)
-            continue
+        try:
+            if is_recording_paused:
+                time.sleep(1)
+                continue
 
-        active_title = get_active_window_title()
-        if active_title and "OpenReLife" in active_title:
-            time.sleep(1)
-            continue
+            active_title = get_active_window_title()
+            if active_title and "OpenReLife" in active_title:
+                time.sleep(1)
+                continue
 
-        if skip_incognito_recording and is_browser_incognito():
-            time.sleep(1)
-            continue
+            if skip_incognito_recording and is_browser_incognito():
+                time.sleep(1)
+                continue
 
-        if not is_user_active():
-            time.sleep(3)
-            continue
+            if not is_user_active():
+                time.sleep(3)
+                continue
 
-        screenshots = take_screenshots()
+            screenshots = take_screenshots()
 
-        for i, screenshot in enumerate(screenshots):
-            thumb = _downscale_for_comparison(screenshot)
+            for i, screenshot in enumerate(screenshots):
+                thumb = _downscale_for_comparison(screenshot)
 
-            if not is_similar(thumb, last_thumbs[i]):
-                last_thumbs[i] = thumb
+                if not is_similar(thumb, last_thumbs[i]):
+                    last_thumbs[i] = thumb
 
-                # Save image to disk
-                image = Image.fromarray(screenshot)
-                width, height = image.size
+                    # Save image to disk
+                    image = Image.fromarray(screenshot)
+                    width, height = image.size
 
-                if screenshot_quality == 'high':
-                    save_kwargs = {'lossless': True}
-                elif screenshot_quality == 'medium':
-                    image = image.resize((int(width * 0.95), int(height * 0.95)), Image.LANCZOS)
-                    save_kwargs = {'lossless': False, 'quality': 95}
-                else:
-                    image = image.resize((int(width * 0.8), int(height * 0.8)), Image.LANCZOS)
-                    save_kwargs = {'lossless': False, 'quality': 80}
+                    if screenshot_quality == 'high':
+                        save_kwargs = {'lossless': True}
+                    elif screenshot_quality == 'medium':
+                        image = image.resize((int(width * 0.95), int(height * 0.95)), Image.LANCZOS)
+                        save_kwargs = {'lossless': False, 'quality': 95}
+                    else:
+                        image = image.resize((int(width * 0.8), int(height * 0.8)), Image.LANCZOS)
+                        save_kwargs = {'lossless': False, 'quality': 80}
 
-                timestamp = int(time.time() * 1000000)
-                filename = f"{timestamp}.webp"
-                image.save(
-                    os.path.join(screenshots_path, filename),
-                    format="webp",
-                    **save_kwargs
-                )
+                    timestamp = int(time.time() * 1000000)
+                    filename = f"{timestamp}.webp"
+                    image.save(
+                        os.path.join(screenshots_path, filename),
+                        format="webp",
+                        **save_kwargs
+                    )
 
-                # Insert stub DB entry (no text/embedding yet)
-                active_app_name = get_active_app_name() or "Unknown App"
-                active_window_title = get_active_window_title() or "Unknown Title"
-                insert_entry_stub(timestamp, active_app_name, active_window_title)
+                    # Insert stub DB entry (no text/embedding yet)
+                    active_app_name = get_active_app_name() or "Unknown App"
+                    active_window_title = get_active_window_title() or "Unknown Title"
+                    insert_entry_stub(timestamp, active_app_name, active_window_title)
 
-                # Queue timestamp for OCR processing (image read from disk later)
-                try:
-                    _ocr_queue.put_nowait(timestamp)
-                except queue.Full:
+                    # Queue timestamp for OCR processing (image read from disk later)
                     try:
-                        _ocr_queue.get_nowait()
-                    except queue.Empty:
-                        pass
-                    _ocr_queue.put_nowait(timestamp)
+                        _ocr_queue.put_nowait(timestamp)
+                    except queue.Full:
+                        try:
+                            _ocr_queue.get_nowait()
+                        except queue.Empty:
+                            pass
+                        _ocr_queue.put_nowait(timestamp)
 
-        _wait_with_incognito_check(screenshot_interval)
+            _wait_with_incognito_check(screenshot_interval)
+
+        except Exception as e:
+            # Survive errors (e.g. mss failing after macOS sleep/wake)
+            print(f"Capture thread error (retrying in 5s): {e}")
+            time.sleep(5)
 
 
 ocr_cooldown = 90  # seconds between OCR batches
