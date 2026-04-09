@@ -30,8 +30,8 @@ _file_handler = logging.handlers.RotatingFileHandler(
 _file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
 _logger.addHandler(_file_handler)
 
-# Queue for pending OCR work: timestamps only (images read from disk on demand)
-_ocr_queue: queue.Queue = queue.Queue(maxsize=1000)
+# Queue for pending OCR work: timestamps only (8 bytes each, no memory concern)
+_ocr_queue: queue.Queue = queue.Queue(maxsize=50000)
 
 
 def mean_structured_similarity_index(
@@ -460,9 +460,11 @@ def ocr_worker_thread():
         # Block until at least one item arrives
         first_ts = _ocr_queue.get()
 
-        # Wait for more frames to accumulate
-        _logger.debug(f"OCR worker: first item received, waiting {ocr_cooldown}s for batch")
-        time.sleep(ocr_cooldown)
+        # Check power mode to determine accumulation wait
+        _, _, cooldown_mult_pre = _get_batch_params(_ocr_queue.qsize() + 1)
+        accumulate_time = ocr_cooldown * cooldown_mult_pre
+        _logger.debug(f"OCR worker: first item received, waiting {accumulate_time:.0f}s for batch (mult={cooldown_mult_pre})")
+        time.sleep(accumulate_time)
 
         # Collect all pending timestamps
         pending = [first_ts]
