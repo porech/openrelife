@@ -503,11 +503,17 @@ def ocr_worker_thread():
                 break
 
         # Process batch in a subprocess — all memory freed on exit
-        _logger.info(f"OCR subprocess starting: {len(batch)} frames, {threads} threads")
+        # Timeout: 10s per frame max, kill if hung
+        batch_timeout = max(120, len(batch) * 10)
+        _logger.info(f"OCR subprocess starting: {len(batch)} frames, {threads} threads (timeout={batch_timeout}s)")
         batch_start = time.time()
         proc = Process(target=_process_ocr_batch, args=(batch, threads))
         proc.start()
-        proc.join()
+        proc.join(timeout=batch_timeout)
+        if proc.is_alive():
+            _logger.error(f"OCR subprocess hung after {batch_timeout}s, killing it")
+            proc.kill()
+            proc.join()
         batch_duration = time.time() - batch_start
         _logger.info(f"OCR subprocess done: {len(batch)} frames in {batch_duration:.0f}s ({batch_duration/len(batch):.1f}s/frame), overflow={len(overflow)}")
 
