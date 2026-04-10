@@ -54,7 +54,15 @@ def create_db() -> None:
                 cursor.execute("ALTER TABLE entries ADD COLUMN ai_text TEXT")
             if "ai_words_coords" not in columns:
                 cursor.execute("ALTER TABLE entries ADD COLUMN ai_words_coords TEXT")
-            
+            if "updated_at" not in columns:
+                cursor.execute("ALTER TABLE entries ADD COLUMN updated_at INTEGER DEFAULT 0")
+                # Backfill: set updated_at = timestamp for existing entries
+                cursor.execute("UPDATE entries SET updated_at = timestamp WHERE updated_at = 0 OR updated_at IS NULL")
+
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_updated_at ON entries (updated_at)"
+            )
+
             conn.commit()
     except sqlite3.Error as e:
         print(f"Database error during table creation: {e}")
@@ -156,11 +164,13 @@ def update_ai_ocr(timestamp: int, ai_text: str, ai_words_coords: List) -> bool:
     try:
         with sqlite3.connect(db_path) as conn:
             cursor = conn.cursor()
+            import time as _time
+            now_us = int(_time.time() * 1000000)
             cursor.execute(
-                """UPDATE entries 
-                   SET ai_text = ?, ai_words_coords = ?
+                """UPDATE entries
+                   SET ai_text = ?, ai_words_coords = ?, updated_at = ?
                    WHERE timestamp = ?""",
-                (ai_text, ai_words_coords_json, timestamp),
+                (ai_text, ai_words_coords_json, now_us, timestamp),
             )
             conn.commit()
             return cursor.rowcount > 0
@@ -216,10 +226,10 @@ def insert_entry_stub(timestamp: int, app: str, title: str) -> Optional[int]:
         with sqlite3.connect(db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(
-                """INSERT INTO entries (text, timestamp, embedding, app, title, words_coords)
-                   VALUES ('', ?, ?, ?, ?, '[]')
+                """INSERT INTO entries (text, timestamp, embedding, app, title, words_coords, updated_at)
+                   VALUES ('', ?, ?, ?, ?, '[]', ?)
                    ON CONFLICT(timestamp) DO NOTHING""",
-                (timestamp, zero_embedding, app, title),
+                (timestamp, zero_embedding, app, title, timestamp),
             )
             conn.commit()
             if cursor.rowcount > 0:
@@ -231,15 +241,17 @@ def insert_entry_stub(timestamp: int, app: str, title: str) -> Optional[int]:
 
 def update_entry_ocr(timestamp: int, text: str, embedding: np.ndarray, words_coords: List = None) -> bool:
     """Fill in OCR results for a previously inserted stub entry."""
+    import time as _time
     embedding_bytes: bytes = embedding.astype(np.float32).tobytes()
     words_coords_json: str = json.dumps(words_coords) if words_coords else "[]"
+    now_us = int(_time.time() * 1000000)
     try:
         with sqlite3.connect(db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(
-                """UPDATE entries SET text = ?, embedding = ?, words_coords = ?
+                """UPDATE entries SET text = ?, embedding = ?, words_coords = ?, updated_at = ?
                    WHERE timestamp = ?""",
-                (text, embedding_bytes, words_coords_json, timestamp),
+                (text, embedding_bytes, words_coords_json, now_us, timestamp),
             )
             conn.commit()
             return cursor.rowcount > 0
@@ -318,6 +330,37 @@ def get_entries_metadata(limit: int = None, min_timestamp: int = 0) -> List[Meta
                 )
     except sqlite3.Error as e:
         print(f"Database error while fetching metadata entries: {e}")
+    return entries
+
+
+SyncEntry = namedtuple("SyncEntry", ["id", "app", "title", "text", "timestamp", "ai_text", "updated_at"])
+
+
+def get_entries_updated_since(since_updated_at: int = 0) -> List[SyncEntry]:
+    """Returns entries where updated_at > since. Catches both new inserts and OCR updates."""
+    entries: List[SyncEntry] = []
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT id, app, title, text, timestamp, ai_text, updated_at FROM entries WHERE updated_at > ? ORDER BY timestamp DESC",
+                (since_updated_at,),
+            )
+            for row in cursor:
+                entries.append(
+                    SyncEntry(
+                        id=row["id"],
+                        app=row["app"],
+                        title=row["title"],
+                        text=row["text"],
+                        timestamp=row["timestamp"],
+                        ai_text=row["ai_text"],
+                        updated_at=row["updated_at"],
+                    )
+                )
+    except sqlite3.Error as e:
+        print(f"Database error while fetching updated entries: {e}")
     return entries
 
 

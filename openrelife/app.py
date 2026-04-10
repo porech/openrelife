@@ -8,7 +8,7 @@ from jinja2 import BaseLoader
 from PIL import Image
 
 from openrelife.config import appdata_folder, screenshots_path
-from openrelife.database import create_db, get_timestamps, update_ai_ocr, delete_entries, get_entry_by_timestamp, get_entries_light, get_entries_metadata, search_entries_streaming
+from openrelife.database import create_db, get_timestamps, update_ai_ocr, delete_entries, get_entry_by_timestamp, get_entries_light, get_entries_metadata, get_entries_updated_since, search_entries_streaming
 from openrelife.nlp import get_embedding
 from openrelife.screenshot import (
     record_screenshots_thread,
@@ -1498,30 +1498,45 @@ def timeline_v2():
       }
     }
 
-    // Smart Sync Logic
+    // Smart Sync Logic — uses updated_at cursor to catch both new inserts and OCR updates
     let syncInterval = null;
+    let syncCursor = Date.now() * 1000; // microseconds — start from now
 
     async function syncData() {
-      if (timestamps.length === 0) return;
-      const lastKnown = timestamps[0];
       try {
-        // Smart Resume: Check if we are currently at the latest timestamp BEFORE syncing
-        const wasAtLatest = parseInt(slider.value) === parseInt(slider.max);
+        const wasAtLatest = timestamps.length > 0 && parseInt(slider.value) === parseInt(slider.max);
 
-        const response = await fetch(`/api/sync?since=${lastKnown}`);
+        const response = await fetch(`/api/sync?since=${syncCursor}`);
         const data = await response.json();
+
+        if (data.sync_cursor) syncCursor = data.sync_cursor;
+
         if (data.timestamps && data.timestamps.length > 0) {
-          timestamps = [...data.timestamps, ...timestamps];
-          entriesData = {...entriesData, ...data.entries};
-          slider.max = timestamps.length - 1;
-          console.log(`Synced ${data.timestamps.length} new entries.`);
-          
-          // If we were at the latest, stay at the latest (which is now a new timestamp)
-          if (wasAtLatest) {
-             slider.value = slider.max;
-             updateDisplay(timestamps[0]); // timestamps[0] is the new latest
+          // Merge: add new timestamps, update existing entries
+          const existingSet = new Set(timestamps);
+          const newTimestamps = data.timestamps.filter(ts => !existingSet.has(ts));
+
+          if (newTimestamps.length > 0) {
+            timestamps = [...newTimestamps, ...timestamps];
+            slider.max = timestamps.length - 1;
           }
-          
+
+          // Update/add entry data (overwrites stubs with OCR data)
+          entriesData = {...entriesData, ...data.entries};
+
+          console.log(`Synced: ${newTimestamps.length} new, ${data.timestamps.length - newTimestamps.length} updated`);
+
+          if (wasAtLatest && newTimestamps.length > 0) {
+             slider.value = slider.max;
+             updateDisplay(timestamps[0]);
+          }
+
+          // If currently viewing an entry that was updated, refresh display
+          if (currentEntry && data.entries[currentEntry.timestamp]) {
+            currentEntry = data.entries[currentEntry.timestamp];
+            updateExtractedText();
+          }
+
           updateJumpButtonVisibility();
         }
       } catch (e) { console.error("Sync failed", e); }
@@ -2443,24 +2458,24 @@ def api_search():
 
 @app.route("/api/sync")
 def api_sync():
-    """API endpoint to fetch new entries since a timestamp"""
+    """API endpoint to fetch new and updated entries.
+
+    Uses updated_at instead of timestamp so that OCR updates on existing
+    entries are picked up by the frontend (not just new inserts).
+    """
     try:
         since = int(request.args.get("since", 0))
     except ValueError:
         since = 0
-        
-    
-    # Efficiently fetch only new entries using SQL filtering
-    # This optimization prevents the server from reading the entire DB every 2 seconds
-    new_entries = get_entries_metadata(min_timestamp=since)
+
+    new_entries = get_entries_updated_since(since_updated_at=since)
 
     if not new_entries:
-        return jsonify({'timestamps': [], 'entries': {}})
+        return jsonify({'timestamps': [], 'entries': {}, 'sync_cursor': since})
 
-    # Timestamps (descending)
     new_timestamps = [e.timestamp for e in new_entries]
+    max_updated_at = max(e.updated_at for e in new_entries)
 
-    # Entries dictionary (no coords — loaded on demand via /api/entry-coords)
     new_entries_dict = {
         entry.timestamp: {
             'id': entry.id,
@@ -2470,10 +2485,11 @@ def api_sync():
         }
         for entry in new_entries
     }
-    
+
     return jsonify({
         'timestamps': new_timestamps,
-        'entries': new_entries_dict
+        'entries': new_entries_dict,
+        'sync_cursor': max_updated_at
     })
 
 
