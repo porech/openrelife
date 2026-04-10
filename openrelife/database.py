@@ -63,10 +63,11 @@ def create_db() -> None:
                 "CREATE INDEX IF NOT EXISTS idx_updated_at ON entries (updated_at)"
             )
 
-            # Migration: convert old stubs (text='', never OCR'd) to NULL
-            # so get_pending_ocr_timestamps picks them up
+            # Fix: entries created before async OCR (pre April 9 2025) that have
+            # text=NULL were incorrectly migrated. They were already processed by the
+            # old sync OCR — mark them as processed-empty so they don't clog the queue.
             cursor.execute(
-                "UPDATE entries SET text = NULL WHERE text = '' AND updated_at = timestamp"
+                "UPDATE entries SET text = '' WHERE text IS NULL AND timestamp < 1775725200000000"
             )
 
             conn.commit()
