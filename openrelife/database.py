@@ -63,6 +63,12 @@ def create_db() -> None:
                 "CREATE INDEX IF NOT EXISTS idx_updated_at ON entries (updated_at)"
             )
 
+            # Migration: convert old stubs (text='', never OCR'd) to NULL
+            # so get_pending_ocr_timestamps picks them up
+            cursor.execute(
+                "UPDATE entries SET text = NULL WHERE text = '' AND updated_at = timestamp"
+            )
+
             conn.commit()
     except sqlite3.Error as e:
         print(f"Database error during table creation: {e}")
@@ -227,7 +233,7 @@ def insert_entry_stub(timestamp: int, app: str, title: str) -> Optional[int]:
             cursor = conn.cursor()
             cursor.execute(
                 """INSERT INTO entries (text, timestamp, embedding, app, title, words_coords, updated_at)
-                   VALUES ('', ?, ?, ?, ?, '[]', ?)
+                   VALUES (NULL, ?, ?, ?, ?, '[]', ?)
                    ON CONFLICT(timestamp) DO NOTHING""",
                 (timestamp, zero_embedding, app, title, timestamp),
             )
@@ -293,7 +299,7 @@ def get_pending_ocr_timestamps() -> List[int]:
         with sqlite3.connect(db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT timestamp FROM entries WHERE text = '' OR text IS NULL ORDER BY timestamp ASC"
+                "SELECT timestamp FROM entries WHERE text IS NULL ORDER BY timestamp ASC"
             )
             timestamps = [row[0] for row in cursor]
     except sqlite3.Error as e:
