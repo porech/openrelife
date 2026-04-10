@@ -299,7 +299,7 @@ def get_pending_ocr_timestamps() -> List[int]:
         with sqlite3.connect(db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT timestamp FROM entries WHERE text IS NULL ORDER BY timestamp ASC"
+                "SELECT timestamp FROM entries WHERE text IS NULL ORDER BY timestamp DESC"
             )
             timestamps = [row[0] for row in cursor]
     except sqlite3.Error as e:
