@@ -308,6 +308,28 @@ def get_pending_ocr_timestamps() -> List[int]:
     return timestamps
 
 
+def get_pending_ocr_timestamps_in_set(candidate_timestamps: List[int]) -> List[int]:
+    """Returns subset of candidate_timestamps that still have text=NULL.
+
+    Used to detect frames that weren't processed (e.g. after subprocess hang/kill).
+    """
+    if not candidate_timestamps:
+        return []
+    pending: List[int] = []
+    try:
+        with sqlite3.connect(db_path) as conn:
+            cursor = conn.cursor()
+            placeholders = ','.join('?' * len(candidate_timestamps))
+            cursor.execute(
+                f"SELECT timestamp FROM entries WHERE text IS NULL AND timestamp IN ({placeholders})",
+                candidate_timestamps,
+            )
+            pending = [row[0] for row in cursor]
+    except sqlite3.Error as e:
+        print(f"Database error while checking pending subset: {e}")
+    return pending
+
+
 def get_entries_metadata(limit: int = None, min_timestamp: int = 0) -> List[MetadataEntry]:
     """Retrieves entries without embedding or coords — only ~1KB per entry."""
     entries: List[MetadataEntry] = []

@@ -10,7 +10,7 @@ import numpy as np
 from PIL import Image
 
 from openrelife.config import appdata_folder, screenshots_path, args
-from openrelife.database import insert_entry_stub, update_entry_ocr, get_pending_ocr_timestamps
+from openrelife.database import insert_entry_stub, update_entry_ocr, get_pending_ocr_timestamps, get_pending_ocr_timestamps_in_set
 from openrelife.nlp import get_embedding
 from openrelife.ocr import extract_text_from_image
 from openrelife.utils import (
@@ -510,16 +510,28 @@ def ocr_worker_thread():
         proc = Process(target=_process_ocr_batch, args=(batch, threads))
         proc.start()
         proc.join(timeout=batch_timeout)
-        if proc.is_alive():
+        was_hung = proc.is_alive()
+        if was_hung:
             _logger.error(f"OCR subprocess hung after {batch_timeout}s, killing it")
             proc.kill()
             proc.join()
         batch_duration = time.time() - batch_start
-        _logger.info(f"OCR subprocess done: {len(batch)} frames in {batch_duration:.0f}s ({batch_duration/len(batch):.1f}s/frame), overflow={len(overflow)}")
+        _logger.info(f"OCR subprocess done: {len(batch)} frames in {batch_duration:.0f}s ({batch_duration/len(batch):.1f}s/frame), overflow={len(overflow)}, hung={was_hung}")
 
-        # Mark processed tasks as done
+        # Mark all batch tasks as done in the queue
         for _ in batch:
             _ocr_queue.task_done()
+
+        # Re-queue any batch frames that still have text=NULL (subprocess didn't finish them)
+        # This catches both hung subprocesses and partial completions.
+        unprocessed = get_pending_ocr_timestamps_in_set(batch)
+        if unprocessed:
+            _logger.warning(f"Re-queuing {len(unprocessed)} unprocessed frames from batch")
+            for ts in unprocessed:
+                try:
+                    _ocr_queue.put_nowait(ts)
+                except queue.Full:
+                    break
 
         # Cooldown between batches.
         # In boost mode (cooldown_mult < 1.0): use short fixed cooldown
