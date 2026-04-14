@@ -167,36 +167,9 @@ def get_skip_incognito_recording() -> bool:
     return skip_incognito_recording
 
 def _wait_with_incognito_check(seconds: float) -> bool:
-    """Wait for specified seconds, checking for incognito mode periodically.
-
-    Args:
-        seconds: Total time to wait in seconds.
-
-    Returns:
-        True if incognito was detected during wait, False otherwise.
-    """
-    if not skip_incognito_recording:
-        time.sleep(seconds)
-        return False
-
-    # Check every min(seconds, 3) seconds normally
-    # If incognito detected, check every 1 second until it's gone
-    check_interval = min(seconds, 3.0)
-    elapsed = 0.0
-
-    while elapsed < seconds:
-        if is_browser_incognito():
-            # Incognito detected - wait here with frequent checks until it's gone
-            while is_browser_incognito():
-                time.sleep(1)
-            # Incognito gone - restart the wait
-            elapsed = 0.0
-            continue
-
-        sleep_time = min(check_interval, seconds - elapsed)
-        time.sleep(sleep_time)
-        elapsed += sleep_time
-
+    """Wait for specified seconds. Incognito is checked once per capture cycle,
+    not during the wait, to avoid expensive Accessibility API calls."""
+    time.sleep(seconds)
     return False
 
 
