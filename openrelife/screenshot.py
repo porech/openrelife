@@ -393,20 +393,20 @@ def _get_batch_params(pending_count: int) -> tuple:
         return (10, 4, 1.0)
 
     # smart (default)
+    # When user is active: 2 threads to keep CPU ~200% instead of 500%
     if not has_bat:
-        return (10, 4, 1.0)
+        return (10, 2, 1.0)
     if on_battery:
-        return (5, 4, 1.0)
+        return (5, 2, 1.0)
     if not user_active:
-        # Idle + AC: larger batches for recovery, capped at 20 to limit heat
+        # Idle + AC: larger batches for recovery, capped at 20
         if battery_full:
             return (min(pending_count, 20), 4, 0.15)
         return (min(pending_count, 20), 2, 1.0)
     if battery_full:
-        # AC + active + 100%: slightly faster than normal, but not aggressive
-        return (10, 4, 0.5)
+        return (10, 2, 0.5)
     # AC + active
-    return (10, 4, 1.0)
+    return (10, 2, 1.0)
 
 
 def ocr_worker_thread():
