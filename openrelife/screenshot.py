@@ -431,7 +431,7 @@ def _get_batch_params(pending_count: int) -> tuple:
         return (min(pending_count, 50), 2, 1.0)
     if battery_full:
         # AC + active + 100%: slightly faster than normal, but not aggressive
-        return (15, 4, 0.5)
+        return (10, 4, 0.5)
     # AC + active
     return (10, 4, 1.0)
 
