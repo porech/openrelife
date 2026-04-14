@@ -85,39 +85,81 @@ def is_similar(
     return similarity >= similarity_threshold
 
 
-def take_screenshots() -> List[np.ndarray]:
-    """Takes screenshots of all connected monitors or just the primary one.
+def _take_screenshots_macos() -> List[np.ndarray]:
+    """Fast screenshot capture using native macOS screencapture command.
 
-    Depending on the `args.primary_monitor_only` flag, captures either
-    all monitors or only the primary monitor (index 1 in mss.monitors).
-
-    Returns:
-        A list of screenshots, where each screenshot is a NumPy array (RGB).
+    mss.grab() has a 30-second timeout bug on macOS Tahoe (26.x).
+    Native screencapture takes ~0.2 seconds.
     """
+    import subprocess
+    import tempfile
+
     screenshots: List[np.ndarray] = []
-    with mss.mss() as sct:
-        # sct.monitors[0] is the combined view of all monitors
-        # sct.monitors[1] is the primary monitor
-        # sct.monitors[2:] are other monitors
-        monitor_indices = range(1, len(sct.monitors))  # Skip the 'all monitors' entry
+    try:
+        # screencapture -x = no sound, -D = display number (1-based)
+        # Get number of displays
+        result = subprocess.run(
+            ["system_profiler", "SPDisplaysDataType", "-json"],
+            capture_output=True, timeout=5
+        )
+        import json
+        displays_data = json.loads(result.stdout)
+        num_displays = 0
+        for gpu in displays_data.get("SPDisplaysDataType", []):
+            num_displays += len(gpu.get("spdisplays_ndrvs", []))
+        num_displays = max(1, num_displays)
 
         if args.primary_monitor_only:
-            monitor_indices = [1]  # Only index 1 corresponds to the primary monitor
+            display_indices = [1]
+        else:
+            display_indices = range(1, num_displays + 1)
 
+        for display_id in display_indices:
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                tmp_path = tmp.name
+            try:
+                subprocess.run(
+                    ["screencapture", "-x", "-D", str(display_id), "-t", "png", tmp_path],
+                    timeout=10, check=True
+                )
+                img = Image.open(tmp_path).convert("RGB")
+                screenshots.append(np.array(img))
+            finally:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+    except Exception as e:
+        _logger.error(f"macOS screencapture failed: {e}")
+
+    return screenshots
+
+
+def _take_screenshots_mss() -> List[np.ndarray]:
+    """Fallback screenshot capture using mss (cross-platform)."""
+    screenshots: List[np.ndarray] = []
+    with mss.mss() as sct:
+        monitor_indices = range(1, len(sct.monitors))
+        if args.primary_monitor_only:
+            monitor_indices = [1]
         for i in monitor_indices:
-            # Ensure the index is valid before attempting to grab
             if i < len(sct.monitors):
-                monitor_info = sct.monitors[i]
-                # Grab the screen
-                sct_img = sct.grab(monitor_info)
-                # Convert to numpy array and change BGRA to RGB
+                sct_img = sct.grab(sct.monitors[i])
                 screenshot = np.array(sct_img)[:, :, [2, 1, 0]]
                 screenshots.append(screenshot)
-            else:
-                # Handle case where primary_monitor_only is True but only one monitor exists (all monitors view)
-                # This case might need specific handling depending on desired behavior.
-                # For now, we just skip if the index is out of bounds.
-                print(f"Warning: Monitor index {i} out of bounds. Skipping.")
+    return screenshots
+
+
+import sys as _sys
+
+def take_screenshots() -> List[np.ndarray]:
+    """Takes screenshots of all connected monitors.
+
+    Uses native screencapture on macOS (fast), falls back to mss on other platforms.
+    """
+    if _sys.platform == "darwin":
+        return _take_screenshots_macos()
+    return _take_screenshots_mss()
 
     return screenshots
 
