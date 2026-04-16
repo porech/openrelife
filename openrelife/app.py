@@ -1710,8 +1710,47 @@ def timeline_v2():
     // Global Key Handler
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
-         if (window.electronAPI) {
-             window.electronAPI.hideWindow();
+         let handled = false;
+         
+         // Close sidebar if open
+         const sidebar = document.getElementById('sidebar');
+         if (sidebar && sidebar.classList.contains('open')) {
+           toggleSidebar();
+           handled = true;
+         }
+         
+         // Close AI config if open
+         const aiConfig = document.getElementById('aiConfigModal');
+         if (aiConfig && aiConfig.classList.contains('show')) {
+           closeAIConfig();
+           handled = true;
+         }
+         
+         // Close text popup if open
+         const textPopup = document.getElementById('textPopup');
+         if (textPopup && textPopup.classList.contains('show')) {
+           closeTextPopup();
+           handled = true;
+         }
+
+         // Close search results if open
+         if (searchResults && searchResults.classList.contains('show')) {
+           searchResults.classList.remove('show');
+           document.getElementById('searchInput').value = '';
+           document.getElementById('searchIcon').style.display = 'block';
+           document.getElementById('searchClear').style.display = 'none';
+           handled = true;
+         }
+         
+         // Exit delete mode if active
+         if (isDeleteMode) {
+           exitDeleteMode();
+           handled = true;
+         }
+
+         // If nothing was open, hide the app window
+         if (!handled && window.electronAPI) {
+           window.electronAPI.hideWindow();
          }
       }
     });
@@ -1794,12 +1833,8 @@ def timeline_v2():
               prefetchNeighbors(idx);
           }, 500);
         }
-      } else if (e.key === 'Escape') {
-        closeTextPopup();
-        searchResults.classList.remove('show');
       }
     });
-    
     // Render overlay
     function groupWords(words) {
       if (!words || words.length === 0) return [];

@@ -63,6 +63,10 @@
         "to": "pyproject.toml"
       },
       {
+        "from": "../README.md",
+        "to": "README.md"
+      },
+      {
         "from": "../uv.lock",
         "to": "uv.lock"
       }
