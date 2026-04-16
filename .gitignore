@@ -55,3 +55,4 @@ openrelife/ai_config.json
 .claude
 .worktrees/
 uv.lock
+electron-app/uv.lock
