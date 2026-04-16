@@ -162,6 +162,7 @@ function createWindow() {
 
   mainWindow.on('closed', () => {
     mainWindow = null;
+    isHiding = false;
   });
 
   // Handle navigation errors
@@ -203,17 +204,31 @@ function showWindow() {
   }
 }
 
+let isHiding = false;
 function hideWindow() {
+  if (isHiding) return;
+  isHiding = true;
   windowShouldBeVisible = false;
 
   if (mainWindow) {
-    mainWindow.webContents.send('reset-ui');
-    mainWindow.setSimpleFullScreen(false);
+    try {
+        mainWindow.webContents.send('reset-ui');
+        // Only attempt to exit full screen if we are on macOS
+        if (process.platform === 'darwin') {
+            mainWindow.setSimpleFullScreen(false);
+        }
+    } catch (err) {
+        console.error('Error during hideWindow:', err);
+    }
+    
     setTimeout(() => {
       if (mainWindow) {
         mainWindow.hide();
       }
-    }, 100);
+      isHiding = false;
+    }, 150);
+  } else {
+    isHiding = false;
   }
 }
 
@@ -564,11 +579,10 @@ async function startBackend() {
 
   pythonProcess = spawn(pythonExec, ['-m', 'openrelife.app'], {
     cwd: projectRoot,
-    shell: false, 
+    shell: false,
     env: env,
-    detached: false 
-  });
-  
+    detached: true
+  });  
   if (backendLogStream) {
      const timestamp = new Date().toISOString();
      backendLogStream.write(`\n--- New Session: ${timestamp} ---\n`);
@@ -627,7 +641,7 @@ async function startBackend() {
 }
 
 function stopBackend() {
-  if (pythonProcess) {
+  if (pythonProcess && pythonProcess.pid) {
     console.log('Stopping backend...');
     if (backendLogStream) backendLogStream.end();
 
@@ -635,15 +649,19 @@ function stopBackend() {
         spawn("taskkill", ["/pid", pythonProcess.pid, '/f', '/t']);
     } else {
         try {
-            // Kill the entire process group
+            // Kill the entire process group if pid exists and is valid
             process.kill(-pythonProcess.pid, 'SIGTERM'); 
         } catch (err) {
-            console.error('Failed to kill process group:', err);
+            if (err.code !== 'ESRCH') {
+                console.error('Failed to kill process group:', err);
+            }
             // Fallback
             try {
-                pythonProcess.kill();
+                if (pythonProcess) pythonProcess.kill();
             } catch (e) {
-                console.error('Failed to kill process:', e);
+                if (e.code !== 'ESRCH') {
+                    console.error('Failed to kill process:', e);
+                }
             }
         }
     }
