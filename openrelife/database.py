@@ -362,35 +362,27 @@ def get_entries_metadata(limit: int = None, min_timestamp: int = 0) -> List[Meta
     return entries
 
 
-SyncEntry = namedtuple("SyncEntry", ["id", "app", "title", "text", "timestamp", "ai_text", "updated_at"])
+def get_timestamps_updated_since(since_updated_at: int = 0) -> tuple:
+    """Returns (timestamps, max_updated_at) for entries where updated_at > since.
 
-
-def get_entries_updated_since(since_updated_at: int = 0) -> List[SyncEntry]:
-    """Returns entries where updated_at > since. Catches both new inserts and OCR updates."""
-    entries: List[SyncEntry] = []
+    Lightweight: returns only timestamps, no entry data.
+    """
+    timestamps: List[int] = []
+    max_updated: int = since_updated_at
     try:
         with sqlite3.connect(db_path) as conn:
-            conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT id, app, title, text, timestamp, ai_text, updated_at FROM entries WHERE updated_at > ? ORDER BY timestamp DESC",
+                "SELECT timestamp, updated_at FROM entries WHERE updated_at > ? ORDER BY timestamp DESC",
                 (since_updated_at,),
             )
             for row in cursor:
-                entries.append(
-                    SyncEntry(
-                        id=row["id"],
-                        app=row["app"],
-                        title=row["title"],
-                        text=row["text"],
-                        timestamp=row["timestamp"],
-                        ai_text=row["ai_text"],
-                        updated_at=row["updated_at"],
-                    )
-                )
+                timestamps.append(row[0])
+                if row[1] > max_updated:
+                    max_updated = row[1]
     except sqlite3.Error as e:
-        print(f"Database error while fetching updated entries: {e}")
-    return entries
+        print(f"Database error while fetching updated timestamps: {e}")
+    return timestamps, max_updated
 
 
 def get_entries_light(limit: int = None, min_timestamp: int = 0) -> List[LightEntry]:

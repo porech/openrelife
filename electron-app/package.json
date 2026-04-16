@@ -5,8 +5,11 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
+    "prebuild": "cd .. && uv lock",
     "build": "electron-builder",
+    "prebuild-mac": "cd .. && uv lock",
     "build-mac": "electron-builder --mac",
+    "prepack": "cd .. && uv lock",
     "pack": "electron-builder --dir",
     "postinstall": "node scripts/download-uv.js"
   },

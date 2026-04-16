@@ -8,7 +8,7 @@ from jinja2 import BaseLoader
 from PIL import Image
 
 from openrelife.config import appdata_folder, screenshots_path
-from openrelife.database import create_db, get_timestamps, update_ai_ocr, delete_entries, get_entry_by_timestamp, get_entries_light, get_entries_metadata, get_entries_updated_since, search_entries_streaming
+from openrelife.database import create_db, get_timestamps, update_ai_ocr, delete_entries, get_entry_by_timestamp, get_entries_light, get_entries_metadata, get_timestamps_updated_since, search_entries_streaming
 from openrelife.nlp import get_embedding
 from openrelife.screenshot import (
     record_screenshots_thread,
@@ -1498,9 +1498,10 @@ def timeline_v2():
       }
     }
 
-    // Smart Sync Logic — uses updated_at cursor to catch both new inserts and OCR updates
+    // Lightweight sync: fetches only new timestamps, entry data loaded on-demand
     let syncInterval = null;
     let syncCursor = Date.now() * 1000; // microseconds — start from now
+    let syncIndicator = null;
 
     async function syncData() {
       try {
@@ -1512,34 +1513,48 @@ def timeline_v2():
         if (data.sync_cursor) syncCursor = data.sync_cursor;
 
         if (data.timestamps && data.timestamps.length > 0) {
-          // Merge: add new timestamps, update existing entries
           const existingSet = new Set(timestamps);
           const newTimestamps = data.timestamps.filter(ts => !existingSet.has(ts));
 
           if (newTimestamps.length > 0) {
             timestamps = [...newTimestamps, ...timestamps];
             slider.max = timestamps.length - 1;
+            showSyncIndicator(newTimestamps.length);
+
+            if (wasAtLatest) {
+               slider.value = slider.max;
+               updateDisplay(timestamps[0]);
+            }
+
+            updateJumpButtonVisibility();
           }
 
-          // Update/add entry data (overwrites stubs with OCR data)
-          entriesData = {...entriesData, ...data.entries};
-
-          console.log(`Synced: ${newTimestamps.length} new, ${data.timestamps.length - newTimestamps.length} updated`);
-
-          if (wasAtLatest && newTimestamps.length > 0) {
-             slider.value = slider.max;
-             updateDisplay(timestamps[0]);
+          // If currently viewing an entry that got OCR'd, refresh it
+          if (currentEntry && data.timestamps.includes(currentEntry.timestamp)) {
+            delete entriesData[currentEntry.timestamp]; // invalidate cache
+            updateDisplay(currentEntry.timestamp);
           }
-
-          // If currently viewing an entry that was updated, refresh display
-          if (currentEntry && data.entries[currentEntry.timestamp]) {
-            currentEntry = data.entries[currentEntry.timestamp];
-            updateExtractedText();
-          }
-
-          updateJumpButtonVisibility();
+        } else {
+          hideSyncIndicator();
         }
       } catch (e) { console.error("Sync failed", e); }
+    }
+
+    function showSyncIndicator(count) {
+      if (!syncIndicator) {
+        syncIndicator = document.createElement('div');
+        syncIndicator.style.cssText = 'position:fixed;top:60px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.7);color:#fff;padding:6px 16px;border-radius:20px;font-size:13px;z-index:9999;backdrop-filter:blur(10px);transition:opacity 0.3s;';
+        document.body.appendChild(syncIndicator);
+      }
+      syncIndicator.textContent = `Syncing ${count} new screenshots...`;
+      syncIndicator.style.opacity = '1';
+    }
+
+    function hideSyncIndicator() {
+      if (syncIndicator) {
+        syncIndicator.style.opacity = '0';
+        setTimeout(() => { if (syncIndicator) syncIndicator.textContent = ''; }, 300);
+      }
     }
 
     function startSync() {
@@ -1565,67 +1580,56 @@ def timeline_v2():
     if (document.visibilityState === 'visible') startSync();
     updateJumpButtonVisibility();
     
-    // Update display
-    // Update display
+    // Update display — single flow: show image immediately, fetch data on-demand
     async function updateDisplay(timestamp) {
-      // Update basic UI immediately
+      // Image loads immediately (direct URL, no API needed)
       screenshot.src = `/static/${timestamp}.webp`;
       dateEl.textContent = new Date(timestamp / 1000).toLocaleString('en-US', {
         month: 'short', day: 'numeric', year: 'numeric',
         hour: 'numeric', minute: '2-digit', hour12: true
       });
-      
-      // Check if we have data
+
+      // If cached, show instantly
       if (entriesData[timestamp]) {
           currentEntry = entriesData[timestamp];
-          
-          // If image already loaded, render immediately, otherwise wait for onload
-          if (screenshot.complete && screenshot.naturalHeight !== 0) {
-              renderOverlay();
-          }
+          if (screenshot.complete && screenshot.naturalHeight !== 0) renderOverlay();
           screenshot.onload = renderOverlay;
-          
           updateExtractedText();
       } else {
-          // Loading state
+          // Fetch on-demand
           currentEntry = null;
-          renderOverlay(); // Clears overlay
-          document.getElementById('extractedText').innerHTML = '<span class="text-muted"><i class="bi bi-arrow-clockwise spinner-border spinner-border-sm"></i> Loading info...</span>';
-          
+          renderOverlay();
+          document.getElementById('extractedText').innerHTML = '<span class="text-muted"><i class="bi bi-arrow-clockwise spinner-border spinner-border-sm"></i> Loading...</span>';
+
           try {
               if (currentAbortController) currentAbortController.abort();
               currentAbortController = new AbortController();
-              
+
               const res = await fetch(`/api/entry/${timestamp}`, { signal: currentAbortController.signal });
               const data = await res.json();
-              
+
               if (data.success) {
-                  entriesData[timestamp] = data;
-                  
-                  // Check if user is still on this timestamp
-                  const sliderVal = parseInt(slider.value);
-                  const currentIdx = timestamps.length - 1 - sliderVal;
+                  entriesData[timestamp] = data; // cache for next visit
+
+                  // Only update if user is still on this timestamp
+                  const currentIdx = timestamps.length - 1 - parseInt(slider.value);
                   if (timestamps[currentIdx] === timestamp) {
                       currentEntry = data;
                       if (screenshot.complete) renderOverlay();
+                      screenshot.onload = renderOverlay;
                       updateExtractedText();
                   }
-              } else {
-                  document.getElementById('extractedText').textContent = "Info not available.";
               }
           } catch (e) {
               if (e.name === 'AbortError') return;
               console.error("Fetch error", e);
-              document.getElementById('extractedText').textContent = "Error loading info.";
           }
       }
-      
-      // Trigger prefetch for neighbors with debounce
-      // This prevents thousands of requests when scrolling quickly
+
+      // Prefetch neighbors for smooth scrolling
       clearTimeout(prefetchTimeout);
       prefetchTimeout = setTimeout(() => {
-          const sliderVal = parseInt(slider.value);
-          const currentIdx = timestamps.length - 1 - sliderVal;
+          const currentIdx = timestamps.length - 1 - parseInt(slider.value);
           prefetchNeighbors(currentIdx);
       }, 500);
     }
@@ -1871,24 +1875,9 @@ def timeline_v2():
       });
     }
     
-    async function ensureCoords(entry) {
-      if (entry.words_coords !== undefined) return;
-      try {
-        const resp = await fetch(`/api/entry-coords/${entry.timestamp}`);
-        const data = await resp.json();
-        entry.words_coords = data.words_coords || [];
-        entry.ai_words_coords = data.ai_words_coords || [];
-      } catch (e) {
-        entry.words_coords = [];
-        entry.ai_words_coords = [];
-      }
-    }
-
     async function renderOverlay() {
       textOverlay.innerHTML = '';
-      if (!currentEntry) return;
-      await ensureCoords(currentEntry);
-      if (!currentEntry.words_coords || currentEntry.words_coords.length === 0) return;
+      if (!currentEntry || !currentEntry.words_coords || currentEntry.words_coords.length === 0) return;
       
       const w = screenshot.clientWidth;
       const h = screenshot.clientHeight;
@@ -2493,37 +2482,19 @@ def api_search():
 
 @app.route("/api/sync")
 def api_sync():
-    """API endpoint to fetch new and updated entries.
+    """Lightweight sync: returns only new/updated timestamps, no entry data.
 
-    Uses updated_at instead of timestamp so that OCR updates on existing
-    entries are picked up by the frontend (not just new inserts).
+    Entry data is fetched on-demand via /api/entry/<ts> when the user views a frame.
     """
     try:
         since = int(request.args.get("since", 0))
     except ValueError:
         since = 0
 
-    new_entries = get_entries_updated_since(since_updated_at=since)
-
-    if not new_entries:
-        return jsonify({'timestamps': [], 'entries': {}, 'sync_cursor': since})
-
-    new_timestamps = [e.timestamp for e in new_entries]
-    max_updated_at = max(e.updated_at for e in new_entries)
-
-    new_entries_dict = {
-        entry.timestamp: {
-            'id': entry.id,
-            'text': entry.text,
-            'timestamp': entry.timestamp,
-            'ai_text': entry.ai_text,
-        }
-        for entry in new_entries
-    }
+    new_timestamps, max_updated_at = get_timestamps_updated_since(since_updated_at=since)
 
     return jsonify({
         'timestamps': new_timestamps,
-        'entries': new_entries_dict,
         'sync_cursor': max_updated_at
     })
 
