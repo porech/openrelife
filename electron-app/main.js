@@ -581,7 +581,7 @@ async function startBackend() {
     cwd: projectRoot,
     shell: false,
     env: env,
-    detached: true
+    detached: false
   });  
   if (backendLogStream) {
      const timestamp = new Date().toISOString();
