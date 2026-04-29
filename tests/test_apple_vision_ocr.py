@@ -59,3 +59,30 @@ def test_normalize_bbox_preserves_x():
     out = _normalize_bbox(top_left=(0.5, 1.0), bottom_right=(0.7, 0.9))
     assert out["x1"] == 0.5
     assert out["x2"] == 0.7
+
+
+def test_system_recognition_languages_appends_en_us():
+    from openrelife import apple_vision_ocr as m
+    with patch.object(m, "_preferred_system_language", return_value="it-IT"), \
+         patch.object(m, "_vision_supported_languages",
+                      return_value=["en-US", "it-IT", "fr-FR"]):
+        langs = m._system_recognition_languages()
+    assert langs == ["it-IT", "en-US"]
+
+
+def test_system_recognition_languages_dedupes_when_locale_is_en_us():
+    from openrelife import apple_vision_ocr as m
+    with patch.object(m, "_preferred_system_language", return_value="en-US"), \
+         patch.object(m, "_vision_supported_languages",
+                      return_value=["en-US", "it-IT"]):
+        langs = m._system_recognition_languages()
+    assert langs == ["en-US"]
+
+
+def test_system_recognition_languages_drops_unsupported_locale():
+    from openrelife import apple_vision_ocr as m
+    with patch.object(m, "_preferred_system_language", return_value="zxx-XX"), \
+         patch.object(m, "_vision_supported_languages",
+                      return_value=["en-US", "it-IT"]):
+        langs = m._system_recognition_languages()
+    assert langs == ["en-US"]
