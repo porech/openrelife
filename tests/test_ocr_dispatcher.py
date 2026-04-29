@@ -12,7 +12,7 @@ def test_doctr_predictor_is_not_loaded_at_import_time():
     mock_predictor.assert_not_called()
 
 
-def test_extract_text_uses_doctr_when_called():
+def test_extract_text_uses_doctr_when_vision_disabled():
     """Dispatcher routes to doctr currently (no Vision wiring yet)."""
     import sys
     for mod in [m for m in list(sys.modules) if m.startswith("openrelife.ocr")]:

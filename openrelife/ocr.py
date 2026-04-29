@@ -3,7 +3,8 @@
 Public API: extract_text_from_image(image: np.ndarray) -> (str, List[Dict])
 Currently dispatches to doctr only. Vision wiring is added in a later task.
 
-doctr is lazy-loaded: the predictor is constructed on first call.
+doctr is lazy-loaded: the predictor is constructed on first call. On systems
+where Vision works without errors (added later), doctr is never instantiated.
 """
 from typing import Dict, List, Tuple
 
