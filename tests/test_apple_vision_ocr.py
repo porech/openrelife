@@ -86,3 +86,73 @@ def test_system_recognition_languages_drops_unsupported_locale():
                       return_value=["en-US", "it-IT"]):
         langs = m._system_recognition_languages()
     assert langs == ["en-US"]
+
+
+def test_extract_text_with_vision_function_exists_and_signature():
+    """Smoke-test that the function is exported with the expected signature."""
+    import inspect
+    from openrelife.apple_vision_ocr import extract_text_with_vision
+    sig = inspect.signature(extract_text_with_vision)
+    params = list(sig.parameters.keys())
+    assert params == ["image"]
+
+
+def test_utf16_offset_ascii_passthrough():
+    from openrelife.apple_vision_ocr import _utf16_offset
+    s = "Hello world"
+    assert _utf16_offset(s, 0) == 0
+    assert _utf16_offset(s, 5) == 5
+    assert _utf16_offset(s, len(s)) == len(s)
+
+
+def test_utf16_offset_handles_emoji():
+    """Emoji like U+1F600 are 1 Python code point but 2 UTF-16 code units."""
+    from openrelife.apple_vision_ocr import _utf16_offset
+    s = "a\U0001F600b"
+    assert _utf16_offset(s, 0) == 0
+    assert _utf16_offset(s, 1) == 1
+    assert _utf16_offset(s, 2) == 3
+    assert _utf16_offset(s, 3) == 4
+
+
+def test_extract_text_with_vision_propagates_errors_via_mocks(monkeypatch):
+    """Mock-driven: when performRequests_error_ returns (False, error),
+    extract_text_with_vision must raise RuntimeError with the localized message.
+    """
+    import sys
+    if sys.platform != "darwin":
+        import pytest
+        pytest.skip("Vision module requires darwin")
+    import numpy as np
+    from openrelife import apple_vision_ocr as m
+
+    fake_handler = type("FakeHandler", (), {
+        "performRequests_error_": lambda self, reqs, err: (False, type("E", (), {"localizedDescription": lambda self: "boom"})())
+    })()
+    fake_request = type("FakeReq", (), {
+        "setRecognitionLevel_": lambda self, _: None,
+        "setUsesLanguageCorrection_": lambda self, _: None,
+        "setRecognitionLanguages_": lambda self, _: None,
+        "results": lambda self: [],
+    })()
+
+    class FakeVision:
+        VNRequestTextRecognitionLevelAccurate = 1
+        class VNImageRequestHandler:
+            @staticmethod
+            def alloc():
+                return type("A", (), {"initWithCGImage_options_": lambda self, *a: fake_handler})()
+        class VNRecognizeTextRequest:
+            @staticmethod
+            def alloc():
+                return type("A", (), {"init": lambda self: fake_request})()
+
+    monkeypatch.setitem(sys.modules, "Vision", FakeVision)
+    monkeypatch.setattr(m, "_np_image_to_cgimage",
+                        lambda img: (object(), object()))
+    monkeypatch.setattr(m, "_system_recognition_languages",
+                        lambda: ["en-US"])
+
+    import pytest
+    with pytest.raises(RuntimeError, match="boom"):
+        m.extract_text_with_vision(np.zeros((10, 10, 3), dtype=np.uint8))
