@@ -33,5 +33,9 @@ allow-direct-references = true
 
 [project.optional-dependencies]
 windows = ["pywin32", "psutil"]
-macos = ["pyobjc==10.3"]
+macos = [
+    "pyobjc==10.3",
+    "pyobjc-framework-Vision==10.3",
+    "pyobjc-framework-Quartz==10.3",
+]
 linux = []
