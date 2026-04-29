@@ -340,6 +340,21 @@ def get_ocr_compute_mode() -> str:
     return ocr_compute_mode
 
 
+# OCR engine selection: True -> Apple Vision (M-series only); False -> doctr
+_use_apple_vision: bool = False
+
+
+def set_use_apple_vision(enabled) -> None:
+    """Enable/disable Apple Vision backend. Coerces truthy/falsy values to bool."""
+    global _use_apple_vision
+    _use_apple_vision = bool(enabled)
+
+
+def get_use_apple_vision() -> bool:
+    global _use_apple_vision
+    return _use_apple_vision
+
+
 def _is_on_ac_power() -> bool:
     """Check if the Mac is plugged in."""
     try:
