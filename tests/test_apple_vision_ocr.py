@@ -46,3 +46,16 @@ def test_unavailable_when_vision_import_fails():
          patch.object(builtins, "__import__", side_effect=fake_import):
         m = _reload_module()
         assert m.is_apple_vision_available() is False
+
+
+def test_normalize_bbox_flips_y_axis():
+    from openrelife.apple_vision_ocr import _normalize_bbox
+    out = _normalize_bbox(top_left=(0.1, 0.9), bottom_right=(0.2, 0.8))
+    assert out == {"x1": 0.1, "y1": 0.1, "x2": 0.2, "y2": 0.2}
+
+
+def test_normalize_bbox_preserves_x():
+    from openrelife.apple_vision_ocr import _normalize_bbox
+    out = _normalize_bbox(top_left=(0.5, 1.0), bottom_right=(0.7, 0.9))
+    assert out["x1"] == 0.5
+    assert out["x2"] == 0.7

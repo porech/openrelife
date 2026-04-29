@@ -33,3 +33,27 @@ def is_apple_vision_available() -> bool:
     except ImportError:
         return False
     return True
+
+
+from typing import Dict, Tuple
+
+
+def _normalize_bbox(top_left: Tuple[float, float],
+                    bottom_right: Tuple[float, float]) -> Dict[str, float]:
+    """Convert Vision (bottom-left origin) bbox to top-left origin bbox.
+
+    Args:
+        top_left: (x, y) where y is in [0, 1] measured from the bottom of the image.
+        bottom_right: (x, y) likewise.
+
+    Returns:
+        {x1, y1, x2, y2} in top-left origin.
+    """
+    tl_x, tl_y = top_left
+    br_x, br_y = bottom_right
+    return {
+        "x1": tl_x,
+        "y1": round(1.0 - tl_y, 10),
+        "x2": br_x,
+        "y2": round(1.0 - br_y, 10),
+    }
