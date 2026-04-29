@@ -118,6 +118,15 @@ Expected: `uv.lock` is updated with the two new entries (no extra wheel download
 
 Expected: pip installs the framework wheels into the running app's venv (so we can run the new tests against it).
 
+**Important side effect:** `pip install -e` from the worktree path rewrites the venv's editable install pointer to point at the worktree directory. When the worktree is later removed (after merge), the editable link will dangle and the production app's venv will break.
+
+**Recovery after merge:** re-install from the main checkout:
+```bash
+cd /Users/xela92/pj/openrelife
+"$HOME/Library/Application Support/OpenReLife/venv/bin/python" -m pip install -e ".[macos]"
+```
+This is documented here so the implementer doesn't forget; the actual recovery happens after the PR is merged.
+
 - [ ] **Step 4: Smoke-import Vision and Quartz**
 
 ```bash
@@ -661,7 +670,6 @@ def _vision_supported_languages() -> List[str]:
     """
     try:
         import Vision
-        request = Vision.VNRecognizeTextRequest.alloc().init()
         level = Vision.VNRequestTextRecognitionLevelAccurate
         revision = Vision.VNRecognizeTextRequest.currentRevision()
         result, error = Vision.VNRecognizeTextRequest \
@@ -717,7 +725,7 @@ The main entry point. Takes a numpy RGB image, returns `(text, words_with_coords
 - Modify: `openrelife/apple_vision_ocr.py`
 - Modify: `tests/test_apple_vision_ocr.py` (mock-only sanity test; full integration in Chunk 4)
 
-- [ ] **Step 1: Append a failing structure test**
+- [ ] **Step 1: Append failing tests for signature and UTF-16 helper**
 
 Append to `tests/test_apple_vision_ocr.py`:
 
@@ -731,15 +739,78 @@ def test_extract_text_with_vision_function_exists_and_signature():
     sig = inspect.signature(extract_text_with_vision)
     params = list(sig.parameters.keys())
     assert params == ["image"]
+
+
+def test_utf16_offset_ascii_passthrough():
+    from openrelife.apple_vision_ocr import _utf16_offset
+    s = "Hello world"
+    assert _utf16_offset(s, 0) == 0
+    assert _utf16_offset(s, 5) == 5
+    assert _utf16_offset(s, len(s)) == len(s)
+
+
+def test_utf16_offset_handles_emoji():
+    """Emoji like U+1F600 are 1 Python code point but 2 UTF-16 code units."""
+    from openrelife.apple_vision_ocr import _utf16_offset
+    s = "a\U0001F600b"  # 'a', emoji, 'b' — 3 Python chars, 4 UTF-16 units
+    assert _utf16_offset(s, 0) == 0
+    assert _utf16_offset(s, 1) == 1   # before emoji
+    assert _utf16_offset(s, 2) == 3   # after emoji = 1 + 2 surrogate units
+    assert _utf16_offset(s, 3) == 4   # end
+
+
+def test_extract_text_with_vision_propagates_errors_via_mocks(monkeypatch):
+    """Mock-driven: when performRequests_error_ returns (False, error),
+    extract_text_with_vision must raise RuntimeError with the localized message.
+    Locks in selector names + return-value handling without needing real Vision.
+    """
+    import sys
+    if sys.platform != "darwin":
+        import pytest
+        pytest.skip("Vision module requires darwin")
+    import numpy as np
+    from openrelife import apple_vision_ocr as m
+
+    fake_handler = type("FakeHandler", (), {
+        "performRequests_error_": lambda self, reqs, err: (False, type("E", (), {"localizedDescription": lambda self: "boom"})())
+    })()
+    fake_request = type("FakeReq", (), {
+        "setRecognitionLevel_": lambda self, _: None,
+        "setUsesLanguageCorrection_": lambda self, _: None,
+        "setRecognitionLanguages_": lambda self, _: None,
+        "results": lambda self: [],
+    })()
+
+    class FakeVision:
+        VNRequestTextRecognitionLevelAccurate = 1
+        class VNImageRequestHandler:
+            @staticmethod
+            def alloc():
+                return type("A", (), {"initWithCGImage_options_": lambda self, *a: fake_handler})()
+        class VNRecognizeTextRequest:
+            @staticmethod
+            def alloc():
+                return type("A", (), {"init": lambda self: fake_request})()
+
+    monkeypatch.setitem(sys.modules, "Vision", FakeVision)
+    # Bypass the real CGImage build (depends on Quartz/Foundation)
+    monkeypatch.setattr(m, "_np_image_to_cgimage",
+                        lambda img: (object(), object()))
+    monkeypatch.setattr(m, "_system_recognition_languages",
+                        lambda: ["en-US"])
+
+    import pytest
+    with pytest.raises(RuntimeError, match="boom"):
+        m.extract_text_with_vision(np.zeros((10, 10, 3), dtype=np.uint8))
 ```
 
-- [ ] **Step 2: Run to confirm it fails**
+- [ ] **Step 2: Run to confirm they fail**
 
 ```bash
-"$HOME/Library/Application Support/OpenReLife/venv/bin/python" -m pytest tests/test_apple_vision_ocr.py::test_extract_text_with_vision_function_exists_and_signature -v
+"$HOME/Library/Application Support/OpenReLife/venv/bin/python" -m pytest tests/test_apple_vision_ocr.py -v
 ```
 
-Expected: FAIL — `extract_text_with_vision` not exported.
+Expected: existing tests pass + 4 new tests fail (`extract_text_with_vision`, `_utf16_offset`, mock test) — symbols not defined yet.
 
 - [ ] **Step 3: Implement `extract_text_with_vision` and helpers**
 
@@ -750,18 +821,30 @@ import numpy as np
 
 
 def _np_image_to_cgimage(image: np.ndarray):
-    """Convert an HxWx3 RGB uint8 numpy array to a CGImage."""
+    """Convert an HxWx3 RGB uint8 numpy array to a (CGImage, ns_data) tuple.
+
+    Returns BOTH the CGImage and the NSData that backs its pixel buffer.
+    The caller MUST keep the NSData reference alive until after the CGImage
+    has been consumed (e.g. after performRequests_error_ returns), otherwise
+    the underlying buffer is freed and Vision reads garbage memory.
+
+    We use NSData (which copies the bytes) rather than CGDataProviderCreateWithData
+    over a raw Python bytes object, because the latter does NOT retain the bytes
+    and the buffer is freed as soon as the local goes out of scope.
+    """
+    import Foundation
     import Quartz
     if image.dtype != np.uint8 or image.ndim != 3 or image.shape[2] != 3:
         raise ValueError(
             f"Expected HxWx3 uint8 RGB image, got shape={image.shape} dtype={image.dtype}"
         )
     h, w, _ = image.shape
-    # Ensure C-contiguous
     if not image.flags["C_CONTIGUOUS"]:
         image = np.ascontiguousarray(image)
     raw_bytes = image.tobytes()
-    provider = Quartz.CGDataProviderCreateWithData(None, raw_bytes, len(raw_bytes), None)
+    # NSData copies the bytes — survives even if `raw_bytes` is GC'd.
+    ns_data = Foundation.NSData.dataWithBytes_length_(raw_bytes, len(raw_bytes))
+    provider = Quartz.CGDataProviderCreateWithCFData(ns_data)
     color_space = Quartz.CGColorSpaceCreateDeviceRGB()
     bits_per_component = 8
     bits_per_pixel = 24
@@ -775,7 +858,17 @@ def _np_image_to_cgimage(image: np.ndarray):
     )
     if cg is None:
         raise RuntimeError("CGImageCreate returned NULL")
-    return cg
+    return cg, ns_data
+
+
+def _utf16_offset(text: str, char_index: int) -> int:
+    """Convert a Python str index (UTF-32 code points) to the equivalent
+    UTF-16 code-unit offset, which is what NSRange / NSString use.
+
+    For ASCII / BMP text this returns char_index unchanged. For supplementary-
+    plane characters (emoji, rare CJK, etc.) it accounts for surrogate pairs.
+    """
+    return len(text[:char_index].encode("utf-16-le")) // 2
 
 
 def _words_from_observation(observation) -> list:
@@ -795,16 +888,17 @@ def _words_from_observation(observation) -> list:
         idx = full_string.find(token, cursor)
         if idx < 0:
             continue
-        # Build NSRange (NSMakeRange equivalent)
-        ns_range = (idx, len(token))
         cursor = idx + len(token)
+        # Vision/NSString expect UTF-16 code-unit offsets, not Python str indices.
+        utf16_start = _utf16_offset(full_string, idx)
+        utf16_end = _utf16_offset(full_string, idx + len(token))
+        ns_range = (utf16_start, utf16_end - utf16_start)
         try:
             bbox_obs, error = top.boundingBoxForRange_error_(ns_range, None)
         except Exception:
             continue
         if error is not None or bbox_obs is None:
             continue
-        # bbox_obs is a VNRectangleObservation. Use topLeft / bottomRight.
         tl = bbox_obs.topLeft()
         br = bbox_obs.bottomRight()
         bbox = _normalize_bbox((tl.x, tl.y), (br.x, br.y))
@@ -819,7 +913,8 @@ def extract_text_with_vision(image: np.ndarray):
     Raises RuntimeError on Vision failure (caller catches and falls back to doctr).
     """
     import Vision
-    cg_image = _np_image_to_cgimage(image)
+    cg_image, ns_data = _np_image_to_cgimage(image)
+    # `ns_data` MUST remain in scope until performRequests_error_ returns.
     handler = Vision.VNImageRequestHandler.alloc().initWithCGImage_options_(cg_image, None)
     request = Vision.VNRecognizeTextRequest.alloc().init()
     request.setRecognitionLevel_(Vision.VNRequestTextRecognitionLevelAccurate)
@@ -827,6 +922,8 @@ def extract_text_with_vision(image: np.ndarray):
     request.setRecognitionLanguages_(_system_recognition_languages())
 
     success, error = handler.performRequests_error_([request], None)
+    # Touch ns_data so a static analyzer / future refactor can't claim it's unused.
+    _ = ns_data
     if not success:
         msg = error.localizedDescription() if error is not None else "unknown error"
         raise RuntimeError(f"Vision performRequests failed: {msg}")
@@ -847,13 +944,15 @@ def extract_text_with_vision(image: np.ndarray):
     return text, words_with_coords
 ```
 
+**Note on UTF-16 offsets**: a unit test for `_utf16_offset` is added below in Step 4 to lock in the conversion. ASCII passes through unchanged; emoji and supplementary-plane chars need the conversion to avoid wrong bounding boxes.
+
 - [ ] **Step 4: Run all unit tests in this file**
 
 ```bash
 "$HOME/Library/Application Support/OpenReLife/venv/bin/python" -m pytest tests/test_apple_vision_ocr.py -v
 ```
 
-Expected: 10 passed.
+Expected: 13 passed (9 from earlier tasks + signature + 2 UTF-16 + 1 mock-driven).
 
 - [ ] **Step 5: Commit**
 
@@ -1102,16 +1201,19 @@ git commit -m "feat(capture): thread use_apple_vision through OCR subprocess"
 
 - [ ] **Step 1: Update imports at top of `app.py`**
 
-Add imports near the existing `set_screenshot_interval` block (around line 19-27):
+Locate the existing import statements pulling from `openrelife.screenshot` (around lines 19-27 — `set_screenshot_interval`, `set_screenshot_quality`, etc.). Add `set_use_apple_vision` and `get_use_apple_vision` to the same import (typically right after `set_ocr_compute_mode`).
+
+Then, on a new line right after that import block, add:
 
 ```python
-from openrelife.screenshot import (
-    # ... existing ...
-    set_use_apple_vision,
-    get_use_apple_vision,
-)
 from openrelife.apple_vision_ocr import is_apple_vision_available
 ```
+
+Verify with:
+```bash
+grep -n "set_use_apple_vision\|is_apple_vision_available" openrelife/app.py
+```
+Expected: at least two matching lines near the top of the file.
 
 - [ ] **Step 2: Update `load_settings()` to handle the new key**
 
@@ -1231,7 +1333,7 @@ Identify the unified `POST /api/settings` handler and the surrounding block wher
 
 - [ ] **Step 2: Add the new field handling**
 
-Inside the unified handler, alongside the other field processors, add:
+The unified handler at `app.py:3621` (`api_update_settings`) already uses local variables named `data` (request body) and `settings` (the dict being persisted). Insert the new field block alongside the existing field processors (e.g. after the `skip_incognito` block):
 
 ```python
 if "use_apple_vision" in data:
@@ -1239,7 +1341,11 @@ if "use_apple_vision" in data:
     settings["use_apple_vision"] = bool(data["use_apple_vision"])
 ```
 
-(Adapt the variable names `data` / `settings` to match those used in the existing handler.)
+Verify the insertion is in scope:
+```bash
+grep -n -A 1 "use_apple_vision" openrelife/app.py | head -20
+```
+Expected: the new block appears once inside `api_update_settings`.
 
 - [ ] **Step 3: Smoke-test**
 
@@ -1268,7 +1374,7 @@ git commit -m "feat(api): handle use_apple_vision in unified settings endpoint"
 
 - [ ] **Step 1: Add the HTML section in the modal body**
 
-Locate the "OCR Processing Interval" block in the modal (search for `OCR Processing Interval`). After that block, add:
+Locate the "OCR Processing Interval" block in the modal. Anchor on the unique helper-text line `Default: 90s. Lower = faster text search, higher = less CPU usage.` (this string appears once in `app.py`). Insert the new section immediately **after** the closing `</div>` that follows this helper-text line (i.e. at the end of the OCR Processing Interval block, before the next form-group):
 
 ```html
 <div id="ocrEngineSection" style="display: none; margin-top: 16px;">
@@ -1286,7 +1392,7 @@ Locate the "OCR Processing Interval" block in the modal (search for `OCR Process
 
 - [ ] **Step 2: Add JS to populate and save the checkbox**
 
-In the modal-open handler (search for `openSettings` or where the modal is shown — around `app.py:2188`), add a fetch to populate the checkbox:
+Locate the function `openSettings` (or wherever existing `fetch('/api/settings/...')` calls populate the modal — around `app.py:2188`). Anchor on an existing fetch line such as `fetch('/api/settings/port')`. Add the new fetch immediately after one of the existing similar fetches:
 
 ```javascript
 fetch('/api/settings/apple_vision')
@@ -1304,12 +1410,20 @@ fetch('/api/settings/apple_vision')
   .catch(e => console.warn('apple_vision settings fetch failed', e));
 ```
 
-In the save handler (search for the function called by the "Save Changes" button), include the new field in the request body:
+Then locate the save-handler body construction (search for `body: JSON.stringify({` inside the modal Save handler — there's exactly one such block in the OCR/Capture settings modal). Anchor on the existing `port: ...` field assignment and add the new field next to it:
 
 ```javascript
-// Inside the existing POST body construction:
+// existing line (anchor):
+port: document.getElementById('portInput').value,
+// new line — add immediately above or below:
 use_apple_vision: document.getElementById('useAppleVisionCheckbox').checked,
 ```
+
+Verify with:
+```bash
+grep -n "useAppleVisionCheckbox" openrelife/app.py
+```
+Expected: 3 matches (HTML id, populate fetch, save body).
 
 - [ ] **Step 3: Manual UI smoke test**
 
@@ -1319,6 +1433,12 @@ Restart the app, open the settings modal:
 - Toggle off, click Save, reopen modal: still off
 - Verify `~/Library/Application Support/OpenReLife/settings.json` contains `"use_apple_vision": false`
 - Toggle back on, save, restart the app, reopen modal: still on (persistence verified across restart)
+
+Then verify the engine choice actually flows through to OCR. In one terminal:
+```bash
+tail -f ~/Library/Application\ Support/OpenReLife/logs/capture.log | grep "OCR subprocess starting"
+```
+Toggle the checkbox **off**, save, wait for the next OCR batch (~1 minute or trigger screen activity). Expected: the next log line contains `engine=doctr`. Toggle **on** again, wait for the next batch. Expected: log line contains `engine=vision`.
 
 - [ ] **Step 4: Commit**
 
@@ -1527,6 +1647,9 @@ def main(n: int = 3):
         [f for f in os.listdir(screens) if f.endswith(".webp")],
         key=lambda f: os.path.getmtime(os.path.join(screens, f)),
     )[-n:]
+    if not files:
+        print(f"No .webp captures found in {screens}. Capture some frames first.")
+        sys.exit(1)
     print(f"Benchmarking {len(files)} frames", flush=True)
 
     from PIL import Image
@@ -1580,38 +1703,74 @@ git commit -m "test: add manual benchmark for Apple Vision vs doctr"
 
 ## Chunk 5: Build verification + PR
 
-### Task 18: Run full test suite
+### Task 18: Run full test suite + benchmark
 
-- [ ] **Step 1: Run all pytest**
+- [ ] **Step 1: Verify the venv has the new dependencies**
 
 ```bash
+"$HOME/Library/Application Support/OpenReLife/venv/bin/python" -m pip show pyobjc-framework-Vision pyobjc-framework-Quartz | grep -E "Name|Version"
+```
+
+Expected: both packages report version 10.3. If missing, redo Task 2 Step 3.
+
+- [ ] **Step 2: Run all pytest**
+
+```bash
+cd /path/to/worktree  # ensure cwd is the worktree root
 "$HOME/Library/Application Support/OpenReLife/venv/bin/python" -m pytest tests/ -v
 ```
 
-Expected: every test green (existing + 6 dispatcher + 10 vision unit + 3 integration + 3 settings = ~22 tests).
+Expected: every test green. If anything is red, **stop, fix, do not proceed**.
 
-If anything is red, **stop, fix, do not proceed to build**.
+- [ ] **Step 3: Run the manual benchmark for empirical confirmation**
+
+This step is **mandatory** per spec §9.2 step 2 — it confirms the design's performance claim on real captured frames.
+
+```bash
+"$HOME/Library/Application Support/OpenReLife/venv/bin/python" tests/manual/benchmark_apple_vision.py 5
+```
+
+Expected: Vision time per frame **< 1 second** consistently across the 5 frames; doctr time per frame **several seconds**. Capture the output and keep it for the PR description.
+
+If Vision times are not significantly faster than doctr (within 2×), **stop and investigate** — likely indicates the implementation is silently falling back to doctr or there's a perf bug.
 
 ---
 
 ### Task 19: Build the macOS app bundle (no installer)
 
-- [ ] **Step 1: Build the .app**
+- [ ] **Step 1: Ensure node_modules is present (worktrees do NOT share node_modules)**
 
 ```bash
 cd electron-app
+[ -d node_modules ] || npm install
+```
+
+Expected: either `node_modules` already exists (returns immediately), or npm installs all deps. The `postinstall` hook downloads the bundled `uv` binary too — let it complete.
+
+- [ ] **Step 2: Build the .app**
+
+```bash
 npm run pack
 ```
 
-Expected: `electron-app/dist/mac-arm64/OpenReLife.app` is created. The `prebuild` step regenerates `uv.lock` (already up to date).
+Expected: `electron-app/dist/mac-arm64/OpenReLife.app` is created. The `prebuild-mac` step regenerates `uv.lock` (already up to date from Task 2).
 
-- [ ] **Step 2: Verify bundle contents include the new module**
+- [ ] **Step 3: Verify bundle contents include the new and modified modules**
 
 ```bash
-find dist/mac-arm64/OpenReLife.app/Contents/Resources/openrelife -name "apple_vision_ocr.py"
+find dist/mac-arm64/OpenReLife.app/Contents/Resources/openrelife -name "apple_vision_ocr.py" -o -name "ocr.py"
+grep -l "_extract_with_vision" dist/mac-arm64/OpenReLife.app/Contents/Resources/openrelife/ocr.py
 ```
 
-Expected: prints the path. If empty, `extraResources` glob is wrong.
+Expected: both `apple_vision_ocr.py` and `ocr.py` present in the bundle, and the bundled `ocr.py` contains `_extract_with_vision` (proves the dispatcher refactor was bundled, not a stale copy).
+
+- [ ] **Step 4: Bundle size sanity check**
+
+```bash
+du -sh dist/mac-arm64/OpenReLife.app
+```
+
+Expected: similar to the previous release size (give or take a few MB). A large jump would suggest doctr/torch models accidentally got bundled despite lazy loading.
 
 ---
 
@@ -1662,33 +1821,73 @@ Expected: <1s/frame with engine=vision. Toggle off in settings, wait next batch,
 - Per-word overlay (click a screenshot, see word highlights) still works
 - Existing settings (interval, quality, compute mode) still save/load
 
-If anything regressed, **stop, identify the cause, do not push**.
+- [ ] **Step 6: Verify default-on behavior on a "fresh install"**
+
+Quit the app. Back up the user's settings, then simulate a fresh install:
+
+```bash
+cp ~/Library/Application\ Support/OpenReLife/settings.json /tmp/settings.json.bak
+"$HOME/Library/Application Support/OpenReLife/venv/bin/python" -c "
+import json
+p = '$HOME/Library/Application Support/OpenReLife/settings.json'
+with open(p) as f: s = json.load(f)
+s.pop('use_apple_vision', None)  # remove the key entirely
+with open(p, 'w') as f: json.dump(s, f, indent=4)
+print('removed use_apple_vision key')
+"
+```
+
+Relaunch the bundle. Expected: the modal "Use Apple Vision" checkbox is **checked** (default-on for this Apple Silicon Mac), and the OCR log line shows `engine=vision`. Then restore:
+
+```bash
+cp /tmp/settings.json.bak ~/Library/Application\ Support/OpenReLife/settings.json
+```
+
+- [ ] **Step 7: Verify the doctr fallback path actually triggers**
+
+Keep Vision enabled in settings, then deliberately break the Vision call to verify fallback works in the bundled app (not just in unit tests). Edit the bundled `apple_vision_ocr.py` to inject a failure:
+
+```bash
+sed -i.bak '/^def extract_text_with_vision/a\
+    raise RuntimeError("test fallback")' \
+  dist/mac-arm64/OpenReLife.app/Contents/Resources/openrelife/apple_vision_ocr.py
+```
+
+Restart the bundle. Trigger an OCR batch (screen activity). Expected: capture.log contains a `Vision OCR failed (...) falling back to doctr` warning **and** the resulting OCR entry has populated text (proving doctr ran). Then restore:
+
+```bash
+mv dist/mac-arm64/OpenReLife.app/Contents/Resources/openrelife/apple_vision_ocr.py.bak \
+   dist/mac-arm64/OpenReLife.app/Contents/Resources/openrelife/apple_vision_ocr.py
+```
+
+If anything regressed in any of the steps above, **stop, identify the cause, do not push**.
 
 ---
 
 ### Task 21: Push branch and open PR
 
-- [ ] **Step 1: Push the worktree branch**
+**STOP — confirmation gate before any push.** The user has previously stated the PR target is the public upstream `porech/openrelife` (Flow B below). Re-confirm with them at execution time before running any `git push`. Pushing to `prod` is a public action visible to all upstream watchers — do not do it implicitly.
 
+- [ ] **Step 1: Confirm the publish target with the user**
+
+Ask explicitly: "Push branch + open PR on `porech/openrelife` (public, Flow B), or push to GitLab fork only (Flow A)?" Wait for explicit confirmation before proceeding.
+
+- [ ] **Step 2: Verify the test-plan checkboxes against actual results**
+
+Before composing the PR body, re-confirm each item in the template below reflects what was *actually* run and passed in Tasks 18 and 20. If any was skipped or had partial results, replace `[x]` with `[ ]` and add a note.
+
+**Flow A — push to GitLab fork only:**
 ```bash
 git push -u origin feat/apple-vision-ocr
+glab mr create --target-branch main \
+  --title "feat(ocr): Apple Vision backend on Apple Silicon" \
+  --description "Closes upstream porech/openrelife#4. See docs/superpowers/specs/2026-04-29-apple-vision-ocr-design.md."
 ```
 
-(`origin` is the user's GitLab fork. The branch goes there.)
-
-- [ ] **Step 2: Open PR on porech/openrelife from the fork**
-
-The user's main remote is GitLab, but the upstream is GitHub `porech/openrelife`. Two flows:
-
-**Flow A — open PR on the GitLab fork** (for personal review/CI):
+**Flow B — push to GitHub upstream + open public PR:**
 ```bash
-glab mr create --target-branch main --title "feat(ocr): Apple Vision backend on Apple Silicon" \
-  --description "Closes upstream issue porech/openrelife#4. See docs/superpowers/specs/2026-04-29-apple-vision-ocr-design.md."
-```
-
-**Flow B — push a topic branch to GitHub upstream and open PR there**:
-```bash
-git push prod feat/apple-vision-ocr
+git push -u origin feat/apple-vision-ocr        # personal fork (always safe)
+git push prod feat/apple-vision-ocr             # public — confirmed in Step 1
 gh pr create -R porech/openrelife --base main --head feat/apple-vision-ocr \
   --title "feat(ocr): Apple Vision backend on Apple Silicon" \
   --body "$(cat <<'EOF'
@@ -1697,24 +1896,27 @@ Closes #4.
 Replaces doctr CPU OCR with Apple Vision on Apple Silicon Macs (macOS 13+),
 keeping doctr as automatic fallback. Settings toggle to opt out.
 
-Performance (measured on a real frame): Vision <1s/frame vs doctr 8-30s/frame.
+Performance: Vision <1s/frame vs doctr 8-30s/frame on the same fixtures
+(numbers from `tests/manual/benchmark_apple_vision.py`).
 
 Design doc: docs/superpowers/specs/2026-04-29-apple-vision-ocr-design.md
 
 ## Test plan
-- [x] Unit tests green (mocked detection + Y-flip + languages + dispatcher)
+- [x] Unit tests green (detection + Y-flip + UTF-16 + languages + dispatcher + mock-driven Vision call)
 - [x] Integration tests green on M-series (Italian, English, blank fixtures)
-- [x] Manual benchmark confirms Vision <1s/frame
-- [x] Bundled .app smoke-tested locally: settings toggle works, persistence across restart, no regression in search/overlay
+- [x] Manual benchmark confirms Vision <1s/frame on real captured frames
+- [x] Bundled .app smoke-tested locally: settings toggle persists across restart, default-on for fresh install, fallback to doctr verified, no regression in search/overlay
 EOF
 )"
 ```
 
-The user must choose Flow A or B based on their contribution policy. **Confirm with the user before pushing to `prod`** (it's a public action).
+- [ ] **Step 3: Capture and share the PR URL**
 
-- [ ] **Step 3: Final cleanup**
+After the PR is created, copy the URL into the conversation so the user has it. Verify the PR is visible at the expected location.
 
-After PR is merged or while it's in review, the worktree can be removed via the `superpowers:using-git-worktrees` skill (`ExitWorktree` tool).
+- [ ] **Step 4: Final cleanup (deferred)**
+
+Do **not** exit the worktree until the PR is merged or the user confirms it can be discarded. Reviewers may request changes that are easier to address from the existing worktree. When the user signals it's safe to clean up, use `superpowers:using-git-worktrees` (`ExitWorktree` tool) to remove the worktree, then re-install the editable package from main checkout (per Task 2 Step 3 recovery note) so the production app's venv keeps working.
 
 ---
 
