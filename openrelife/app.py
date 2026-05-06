@@ -25,7 +25,10 @@ from openrelife.screenshot import (
     set_ocr_cooldown,
     get_ocr_compute_mode,
     set_ocr_compute_mode,
+    get_use_apple_vision,
+    set_use_apple_vision,
 )
+from openrelife.apple_vision_ocr import is_apple_vision_available
 from openrelife.utils import human_readable_time, timestamp_to_human_readable
 from openrelife.ai_ocr import get_ai_provider
 
@@ -48,6 +51,12 @@ def load_settings():
                     set_ocr_cooldown(int(settings['ocr_cooldown']))
                 if 'ocr_compute_mode' in settings:
                     set_ocr_compute_mode(settings['ocr_compute_mode'])
+                if 'use_apple_vision' in settings:
+                    set_use_apple_vision(bool(settings['use_apple_vision']))
+                elif is_apple_vision_available():
+                    # First-run default: enable on supported platforms
+                    set_use_apple_vision(True)
+                # else: leave default False (already set in screenshot.py)
         except Exception as e:
             print(f"Error loading settings: {e}")
 
@@ -1255,6 +1264,18 @@ def timeline_v2():
           </small>
         </div>
 
+        <div id="ocrEngineSection" style="display: none; margin-top: 16px;">
+          <label style="display:block; font-weight:600; margin-bottom:6px;">OCR Engine</label>
+          <label style="display:flex; align-items:center; gap:8px;">
+            <input type="checkbox" id="useAppleVisionCheckbox">
+            <span>Use Apple Vision (recommended, ~30× faster)</span>
+          </label>
+          <p style="margin-top:6px; color:#666; font-size:12px;">
+            Native macOS text recognition. Falls back to doctr automatically if a frame fails.
+            Available only on Mac with Apple Silicon.
+          </p>
+        </div>
+
         <div class="form-group" style="margin-top: 24px;">
           <label>
             OCR Compute Mode
@@ -1529,9 +1550,14 @@ def timeline_v2():
             updateJumpButtonVisibility();
           }
 
-          // If currently viewing an entry that got OCR'd, refresh it
+          // Invalidate cached data for all updated entries so the next view
+          // fetches fresh OCR text via /api/entry/<ts> instead of stale stubs.
+          for (const ts of data.timestamps) {
+            delete entriesData[ts];
+          }
+
+          // If currently viewing an entry that got OCR'd, refresh it now
           if (currentEntry && data.timestamps.includes(currentEntry.timestamp)) {
-            delete entriesData[currentEntry.timestamp]; // invalidate cache
             updateDisplay(currentEntry.timestamp);
           }
         } else {
@@ -2230,6 +2256,20 @@ def timeline_v2():
             .then(data => {
                 document.getElementById('portInput').value = data.port;
             });
+        // Load Apple Vision setting
+        fetch('/api/settings/apple_vision')
+          .then(r => r.json())
+          .then(d => {
+            const section = document.getElementById('ocrEngineSection');
+            const cb = document.getElementById('useAppleVisionCheckbox');
+            if (d.available) {
+              section.style.display = '';
+              cb.checked = !!d.enabled;
+            } else {
+              section.style.display = 'none';
+            }
+          })
+          .catch(e => console.warn('apple_vision settings fetch failed', e));
     }
 
     function checkIntervalWarning(val) {
@@ -2259,7 +2299,8 @@ def timeline_v2():
                 ocr_cooldown: document.getElementById('ocrCooldownInput').value,
                 ocr_compute_mode: document.getElementById('ocrComputeModeSelect').value,
                 skip_incognito: document.getElementById('skipIncognitoCheckbox').checked,
-                port: document.getElementById('portInput').value
+                port: document.getElementById('portInput').value,
+                use_apple_vision: document.getElementById('useAppleVisionCheckbox').checked
             })
         })
         .then(r => r.json())
@@ -3506,6 +3547,38 @@ def api_settings_ocr_compute_mode():
         return jsonify({'success': True})
 
 
+@app.route("/api/settings/apple_vision", methods=["GET"])
+def api_get_apple_vision_setting():
+    return jsonify({
+        "enabled": get_use_apple_vision(),
+        "available": is_apple_vision_available(),
+    })
+
+
+@app.route("/api/settings/apple_vision", methods=["POST"])
+def api_set_apple_vision_setting():
+    import json
+    data = request.get_json(force=True, silent=True) or {}
+    if "enabled" not in data:
+        return jsonify({"error": "missing 'enabled' field"}), 400
+    enabled = bool(data["enabled"])
+    set_use_apple_vision(enabled)
+    settings_path = os.path.join(appdata_folder, "settings.json")
+    settings = {}
+    if os.path.exists(settings_path):
+        try:
+            with open(settings_path, "r") as f:
+                content = f.read().strip()
+                if content:
+                    settings = json.loads(content)
+        except Exception:
+            settings = {}
+    settings["use_apple_vision"] = enabled
+    with open(settings_path, "w") as f:
+        json.dump(settings, f, indent=4)
+    return jsonify({"enabled": enabled, "available": is_apple_vision_available()})
+
+
 @app.route("/api/settings/quality", methods=["GET", "POST"])
 def api_settings_quality():
     settings_path = os.path.join(appdata_folder, "settings.json")
@@ -3667,6 +3740,11 @@ def api_update_settings():
         set_ocr_compute_mode(mode)
         settings['ocr_compute_mode'] = mode
 
+    # Update Apple Vision OCR engine
+    if 'use_apple_vision' in data:
+        set_use_apple_vision(bool(data['use_apple_vision']))
+        settings['use_apple_vision'] = bool(data['use_apple_vision'])
+
     # Update Skip Incognito
     if 'skip_incognito' in data:
         skip = bool(data['skip_incognito'])
@@ -3736,6 +3814,8 @@ if __name__ == "__main__":
     ocr_t = Thread(target=ocr_worker_thread, daemon=True)
     ocr_t.start()
 
-    # Use Waitress for production
+    # Use Waitress for production. 16 threads gives headroom so static file
+    # serving (/static/*.webp for the timeline scrubber) doesn't queue behind
+    # slower DB-bound endpoints (/api/sync, /api/entry/<ts>) during OCR bursts.
     from waitress import serve
-    serve(app, host='127.0.0.1', port=configured_port, threads=6)
+    serve(app, host='127.0.0.1', port=configured_port, threads=16)

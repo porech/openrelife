@@ -7,6 +7,22 @@ from typing import Any, List, Optional, Tuple
 
 from openrelife.config import db_path
 
+
+def _connect() -> sqlite3.Connection:
+    """Open a SQLite connection with per-connection PRAGMAs for concurrency.
+
+    - busy_timeout=5000: wait up to 5s on a locked DB (graceful retry, no SQLITE_BUSY)
+    - synchronous=NORMAL: safe under WAL, faster than FULL on every commit
+
+    journal_mode=WAL is set once persistently in create_db() — it sticks to the
+    database file across connections.
+    """
+    conn = sqlite3.connect(db_path, timeout=5.0)
+    conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute("PRAGMA synchronous = NORMAL")
+    return conn
+
+
 # Define the structure of a database entry using namedtuple
 Entry = namedtuple("Entry", ["id", "app", "title", "text", "timestamp", "embedding", "words_coords", "ai_text", "ai_words_coords"])
 
@@ -25,8 +41,13 @@ def create_db() -> None:
     window title, extracted text, timestamp, and text embedding.
     """
     try:
-        with sqlite3.connect(db_path) as conn:
+        with _connect() as conn:
             cursor = conn.cursor()
+            # Enable Write-Ahead Logging once. WAL is persistent on the DB file:
+            # readers and writers no longer block each other, eliminating the
+            # UI freezes that happened during OCR write bursts under the default
+            # rollback journal.
+            cursor.execute("PRAGMA journal_mode = WAL")
             cursor.execute(
                 """CREATE TABLE IF NOT EXISTS entries (
                        id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -88,7 +109,7 @@ def get_all_entries(limit: int = None, min_timestamp: int = 0) -> List[Entry]:
     """
     entries: List[Entry] = []
     try:
-        with sqlite3.connect(db_path) as conn:
+        with _connect() as conn:
             conn.row_factory = sqlite3.Row  # Return rows as dictionary-like objects
             cursor = conn.cursor()
             
@@ -144,7 +165,7 @@ def get_timestamps() -> List[int]:
     """
     timestamps: List[int] = []
     try:
-        with sqlite3.connect(db_path) as conn:
+        with _connect() as conn:
             cursor = conn.cursor()
             # Use the index for potentially faster retrieval
             cursor.execute("SELECT timestamp FROM entries ORDER BY timestamp DESC")
@@ -169,7 +190,7 @@ def update_ai_ocr(timestamp: int, ai_text: str, ai_words_coords: List) -> bool:
     """
     ai_words_coords_json: str = json.dumps(ai_words_coords) if ai_words_coords else "[]"
     try:
-        with sqlite3.connect(db_path) as conn:
+        with _connect() as conn:
             cursor = conn.cursor()
             import time as _time
             now_us = int(_time.time() * 1000000)
@@ -208,7 +229,7 @@ def insert_entry(
     words_coords_json: str = json.dumps(words_coords) if words_coords else "[]"
     last_row_id: Optional[int] = None
     try:
-        with sqlite3.connect(db_path) as conn:
+        with _connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """INSERT INTO entries (text, timestamp, embedding, app, title, words_coords)
@@ -230,7 +251,7 @@ def insert_entry_stub(timestamp: int, app: str, title: str) -> Optional[int]:
     zero_embedding = np.zeros(384, dtype=np.float32).tobytes()
     last_row_id: Optional[int] = None
     try:
-        with sqlite3.connect(db_path) as conn:
+        with _connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """INSERT INTO entries (text, timestamp, embedding, app, title, words_coords, updated_at)
@@ -253,7 +274,7 @@ def update_entry_ocr(timestamp: int, text: str, embedding: np.ndarray, words_coo
     words_coords_json: str = json.dumps(words_coords) if words_coords else "[]"
     now_us = int(_time.time() * 1000000)
     try:
-        with sqlite3.connect(db_path) as conn:
+        with _connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """UPDATE entries SET text = ?, embedding = ?, words_coords = ?, updated_at = ?
@@ -279,7 +300,7 @@ def delete_entries(timestamps: List[int]) -> int:
     """
     deleted_count = 0
     try:
-        with sqlite3.connect(db_path) as conn:
+        with _connect() as conn:
             cursor = conn.cursor()
             placeholders = ','.join('?' * len(timestamps))
             sql = f"DELETE FROM entries WHERE timestamp IN ({placeholders})"
@@ -297,7 +318,7 @@ def get_pending_ocr_timestamps() -> List[int]:
     """Returns timestamps of entries that have no OCR text (stub entries)."""
     timestamps: List[int] = []
     try:
-        with sqlite3.connect(db_path) as conn:
+        with _connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 "SELECT timestamp FROM entries WHERE text IS NULL ORDER BY timestamp DESC"
@@ -317,7 +338,7 @@ def get_pending_ocr_timestamps_in_set(candidate_timestamps: List[int]) -> List[i
         return []
     pending: List[int] = []
     try:
-        with sqlite3.connect(db_path) as conn:
+        with _connect() as conn:
             cursor = conn.cursor()
             placeholders = ','.join('?' * len(candidate_timestamps))
             cursor.execute(
@@ -334,7 +355,7 @@ def get_entries_metadata(limit: int = None, min_timestamp: int = 0) -> List[Meta
     """Retrieves entries without embedding or coords — only ~1KB per entry."""
     entries: List[MetadataEntry] = []
     try:
-        with sqlite3.connect(db_path) as conn:
+        with _connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
@@ -370,10 +391,17 @@ def get_timestamps_updated_since(since_updated_at: int = 0) -> tuple:
     timestamps: List[int] = []
     max_updated: int = since_updated_at
     try:
-        with sqlite3.connect(db_path) as conn:
+        with _connect() as conn:
             cursor = conn.cursor()
+            # INDEXED BY idx_updated_at forces the planner to use the updated_at
+            # index for the WHERE filter. Without the hint, the ORDER BY timestamp
+            # DESC clause makes SQLite prefer a full scan via idx_timestamp
+            # (~125k rows) just to find the few recently-updated entries —
+            # turning every /api/sync poll into a 1–3 s lockup.
             cursor.execute(
-                "SELECT timestamp, updated_at FROM entries WHERE updated_at > ? ORDER BY timestamp DESC",
+                "SELECT timestamp, updated_at FROM entries "
+                "INDEXED BY idx_updated_at "
+                "WHERE updated_at > ? ORDER BY timestamp DESC",
                 (since_updated_at,),
             )
             for row in cursor:
@@ -389,7 +417,7 @@ def get_entries_light(limit: int = None, min_timestamp: int = 0) -> List[LightEn
     """Retrieves entries without embedding blob (saves ~1.5KB per entry)."""
     entries: List[LightEntry] = []
     try:
-        with sqlite3.connect(db_path) as conn:
+        with _connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
@@ -451,7 +479,7 @@ def search_entries_streaming(query_embedding: np.ndarray, query_text: str = "", 
     heap: list = []
 
     try:
-        with sqlite3.connect(db_path) as conn:
+        with _connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(
@@ -520,7 +548,7 @@ def get_entry_by_timestamp(timestamp: int) -> Optional[Entry]:
         Optional[Entry]: The entry as an Entry namedtuple, or None if not found.
     """
     try:
-        with sqlite3.connect(db_path) as conn:
+        with _connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             query = "SELECT id, app, title, text, timestamp, embedding, words_coords, ai_text, ai_words_coords FROM entries WHERE timestamp = ?"
