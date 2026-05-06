@@ -1,6 +1,8 @@
 """Unit tests for openrelife.apple_vision_ocr (mocked, always run)."""
 from unittest.mock import patch
 
+import pytest
+
 
 def _reload_module():
     import importlib
@@ -51,7 +53,8 @@ def test_unavailable_when_vision_import_fails():
 def test_normalize_bbox_flips_y_axis():
     from openrelife.apple_vision_ocr import _normalize_bbox
     out = _normalize_bbox(top_left=(0.1, 0.9), bottom_right=(0.2, 0.8))
-    assert out == {"x1": 0.1, "y1": 0.1, "x2": 0.2, "y2": 0.2}
+    # IEEE 754: 1.0 - 0.9 != 0.1 exactly, so use approx for the y values
+    assert out == pytest.approx({"x1": 0.1, "y1": 0.1, "x2": 0.2, "y2": 0.2})
 
 
 def test_normalize_bbox_preserves_x():
@@ -118,11 +121,9 @@ def test_utf16_offset_handles_emoji():
 def test_extract_text_with_vision_propagates_errors_via_mocks(monkeypatch):
     """Mock-driven: when performRequests_error_ returns (False, error),
     extract_text_with_vision must raise RuntimeError with the localized message.
+    Cross-platform: substitutes Vision via monkeypatch, so does not need real Vision.
     """
     import sys
-    if sys.platform != "darwin":
-        import pytest
-        pytest.skip("Vision module requires darwin")
     import numpy as np
     from openrelife import apple_vision_ocr as m
 
@@ -153,6 +154,5 @@ def test_extract_text_with_vision_propagates_errors_via_mocks(monkeypatch):
     monkeypatch.setattr(m, "_system_recognition_languages",
                         lambda: ["en-US"])
 
-    import pytest
     with pytest.raises(RuntimeError, match="boom"):
         m.extract_text_with_vision(np.zeros((10, 10, 3), dtype=np.uint8))

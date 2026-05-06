@@ -1,15 +1,21 @@
 """Apple Vision OCR backend (PyObjC bridge).
 
 This module is safe to import on any platform: heavyweight framework imports
-(Vision, Quartz) happen lazily inside is_apple_vision_available() and the
-public extract function. On non-arm64-darwin systems, is_apple_vision_available()
-short-circuits before attempting any Vision import.
+(Vision, Quartz, Foundation) happen lazily inside is_apple_vision_available()
+and the public extract function. On non-arm64-darwin systems,
+is_apple_vision_available() short-circuits before attempting any Vision import.
 """
 from __future__ import annotations
 
 import functools
+import logging
 import platform
 import sys
+from typing import Dict, List, Tuple
+
+import numpy as np
+
+_logger = logging.getLogger("openrelife.apple_vision")
 
 
 @functools.lru_cache(maxsize=1)
@@ -35,9 +41,6 @@ def is_apple_vision_available() -> bool:
     return True
 
 
-from typing import Dict, List, Tuple
-
-
 def _normalize_bbox(top_left: Tuple[float, float],
                     bottom_right: Tuple[float, float]) -> Dict[str, float]:
     """Convert Vision (bottom-left origin) bbox to top-left origin bbox.
@@ -53,9 +56,9 @@ def _normalize_bbox(top_left: Tuple[float, float],
     br_x, br_y = bottom_right
     return {
         "x1": tl_x,
-        "y1": round(1.0 - tl_y, 10),
+        "y1": 1.0 - tl_y,
         "x2": br_x,
-        "y2": round(1.0 - br_y, 10),
+        "y2": 1.0 - br_y,
     }
 
 
@@ -109,9 +112,6 @@ def _system_recognition_languages() -> List[str]:
     return out
 
 
-import numpy as np
-
-
 def _np_image_to_cgimage(image: np.ndarray):
     """Convert an HxWx3 RGB uint8 numpy array to a (CGImage, ns_data) tuple.
 
@@ -156,7 +156,7 @@ def _utf16_offset(text: str, char_index: int) -> int:
     return len(text[:char_index].encode("utf-16-le")) // 2
 
 
-def _words_from_observation(observation) -> list:
+def _words_from_observation(observation) -> List[Dict]:
     """Extract per-word coords from a VNRecognizedTextObservation.
     Returns a list of {text, x1, y1, x2, y2} entries (top-left origin).
     """
@@ -167,7 +167,7 @@ def _words_from_observation(observation) -> list:
     full_string = str(top.string())
     if not full_string:
         return []
-    out = []
+    out: List[Dict] = []
     cursor = 0
     for token in full_string.split():
         idx = full_string.find(token, cursor)
@@ -179,9 +179,11 @@ def _words_from_observation(observation) -> list:
         ns_range = (utf16_start, utf16_end - utf16_start)
         try:
             bbox_obs, error = top.boundingBoxForRange_error_(ns_range, None)
-        except Exception:
+        except Exception as e:
+            _logger.debug("skip word %r: boundingBoxForRange_error_ raised %s", token, e)
             continue
         if error is not None or bbox_obs is None:
+            _logger.debug("skip word %r: bbox missing (error=%s)", token, error)
             continue
         tl = bbox_obs.topLeft()
         br = bbox_obs.bottomRight()
@@ -190,7 +192,7 @@ def _words_from_observation(observation) -> list:
     return out
 
 
-def extract_text_with_vision(image: np.ndarray):
+def extract_text_with_vision(image: np.ndarray) -> Tuple[str, List[Dict]]:
     """Run Apple Vision OCR on an RGB image.
 
     Returns (text, words_with_coords) matching the doctr backend's schema.
@@ -213,8 +215,8 @@ def extract_text_with_vision(image: np.ndarray):
         raise RuntimeError(f"Vision performRequests failed: {msg}")
 
     observations = request.results() or []
-    text_parts: list = []
-    words_with_coords: list = []
+    text_parts: List[str] = []
+    words_with_coords: List[Dict] = []
     for obs in observations:
         candidates = obs.topCandidates_(1)
         if not candidates or len(candidates) == 0:
