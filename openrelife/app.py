@@ -3814,6 +3814,8 @@ if __name__ == "__main__":
     ocr_t = Thread(target=ocr_worker_thread, daemon=True)
     ocr_t.start()
 
-    # Use Waitress for production
+    # Use Waitress for production. 16 threads gives headroom so static file
+    # serving (/static/*.webp for the timeline scrubber) doesn't queue behind
+    # slower DB-bound endpoints (/api/sync, /api/entry/<ts>) during OCR bursts.
     from waitress import serve
-    serve(app, host='127.0.0.1', port=configured_port, threads=6)
+    serve(app, host='127.0.0.1', port=configured_port, threads=16)
