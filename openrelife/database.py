@@ -393,8 +393,15 @@ def get_timestamps_updated_since(since_updated_at: int = 0) -> tuple:
     try:
         with _connect() as conn:
             cursor = conn.cursor()
+            # INDEXED BY idx_updated_at forces the planner to use the updated_at
+            # index for the WHERE filter. Without the hint, the ORDER BY timestamp
+            # DESC clause makes SQLite prefer a full scan via idx_timestamp
+            # (~125k rows) just to find the few recently-updated entries —
+            # turning every /api/sync poll into a 1–3 s lockup.
             cursor.execute(
-                "SELECT timestamp, updated_at FROM entries WHERE updated_at > ? ORDER BY timestamp DESC",
+                "SELECT timestamp, updated_at FROM entries "
+                "INDEXED BY idx_updated_at "
+                "WHERE updated_at > ? ORDER BY timestamp DESC",
                 (since_updated_at,),
             )
             for row in cursor:
