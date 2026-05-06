@@ -3708,6 +3708,11 @@ def api_update_settings():
         set_ocr_compute_mode(mode)
         settings['ocr_compute_mode'] = mode
 
+    # Update Apple Vision OCR engine
+    if 'use_apple_vision' in data:
+        set_use_apple_vision(bool(data['use_apple_vision']))
+        settings['use_apple_vision'] = bool(data['use_apple_vision'])
+
     # Update Skip Incognito
     if 'skip_incognito' in data:
         skip = bool(data['skip_incognito'])
