@@ -3515,6 +3515,38 @@ def api_settings_ocr_compute_mode():
         return jsonify({'success': True})
 
 
+@app.route("/api/settings/apple_vision", methods=["GET"])
+def api_get_apple_vision_setting():
+    return jsonify({
+        "enabled": get_use_apple_vision(),
+        "available": is_apple_vision_available(),
+    })
+
+
+@app.route("/api/settings/apple_vision", methods=["POST"])
+def api_set_apple_vision_setting():
+    import json
+    data = request.get_json(force=True, silent=True) or {}
+    if "enabled" not in data:
+        return jsonify({"error": "missing 'enabled' field"}), 400
+    enabled = bool(data["enabled"])
+    set_use_apple_vision(enabled)
+    settings_path = os.path.join(appdata_folder, "settings.json")
+    settings = {}
+    if os.path.exists(settings_path):
+        try:
+            with open(settings_path, "r") as f:
+                content = f.read().strip()
+                if content:
+                    settings = json.loads(content)
+        except Exception:
+            settings = {}
+    settings["use_apple_vision"] = enabled
+    with open(settings_path, "w") as f:
+        json.dump(settings, f, indent=4)
+    return jsonify({"enabled": enabled, "available": is_apple_vision_available()})
+
+
 @app.route("/api/settings/quality", methods=["GET", "POST"])
 def api_settings_quality():
     settings_path = os.path.join(appdata_folder, "settings.json")
