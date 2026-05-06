@@ -25,7 +25,10 @@ from openrelife.screenshot import (
     set_ocr_cooldown,
     get_ocr_compute_mode,
     set_ocr_compute_mode,
+    get_use_apple_vision,
+    set_use_apple_vision,
 )
+from openrelife.apple_vision_ocr import is_apple_vision_available
 from openrelife.utils import human_readable_time, timestamp_to_human_readable
 from openrelife.ai_ocr import get_ai_provider
 
@@ -48,6 +51,12 @@ def load_settings():
                     set_ocr_cooldown(int(settings['ocr_cooldown']))
                 if 'ocr_compute_mode' in settings:
                     set_ocr_compute_mode(settings['ocr_compute_mode'])
+                if 'use_apple_vision' in settings:
+                    set_use_apple_vision(bool(settings['use_apple_vision']))
+                elif is_apple_vision_available():
+                    # First-run default: enable on supported platforms
+                    set_use_apple_vision(True)
+                # else: leave default False (already set in screenshot.py)
         except Exception as e:
             print(f"Error loading settings: {e}")
 
