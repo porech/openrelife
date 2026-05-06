@@ -390,7 +390,7 @@ def _get_battery_level() -> int:
     return 100
 
 
-def _process_ocr_batch(timestamps_list, num_threads=4):
+def _process_ocr_batch(timestamps_list, num_threads=4, use_apple_vision=False):
     """Run OCR on a batch of timestamps in a subprocess.
 
     Runs in a separate process so that all memory (PyTorch, numpy arrays,
@@ -414,7 +414,7 @@ def _process_ocr_batch(timestamps_list, num_threads=4):
             screenshot = np.array(img)
             del img
 
-            text, words_coords = extract_text_from_image(screenshot)
+            text, words_coords = extract_text_from_image(screenshot, use_apple_vision=use_apple_vision)
             del screenshot
 
             embedding = get_embedding(text) if text.strip() else np.zeros(384, dtype=np.float32)
@@ -535,9 +535,11 @@ def ocr_worker_thread():
         # Process batch in a subprocess — all memory freed on exit
         # Timeout: 10s per frame max, kill if hung
         batch_timeout = max(120, len(batch) * 10)
-        _logger.info(f"OCR subprocess starting: {len(batch)} frames, {threads} threads (timeout={batch_timeout}s)")
+        use_av = get_use_apple_vision()  # snapshot at batch start; setting changes apply to the next batch
+        engine = "vision" if use_av else "doctr"
+        _logger.info(f"OCR subprocess starting: {len(batch)} frames, {threads} threads, engine={engine} (timeout={batch_timeout}s)")
         batch_start = time.time()
-        proc = Process(target=_process_ocr_batch, args=(batch, threads))
+        proc = Process(target=_process_ocr_batch, args=(batch, threads, use_av))
         proc.start()
         proc.join(timeout=batch_timeout)
         was_hung = proc.is_alive()
