@@ -1,15 +1,19 @@
 """OCR dispatcher.
 
-Public API: extract_text_from_image(image: np.ndarray) -> (str, List[Dict])
-Currently dispatches to doctr only. Vision wiring is added in a later task.
+Public API: extract_text_from_image(image: np.ndarray, use_apple_vision: bool) -> (str, List[Dict])
+Dispatches to Apple Vision when enabled and available, with automatic doctr fallback.
 
 doctr is lazy-loaded: the predictor is constructed on first call. On systems
-where Vision works without errors (added later), doctr is never instantiated.
+where Vision works without errors, doctr is never instantiated.
 """
+import logging
 from typing import Dict, List, Tuple
 
 import numpy as np
 
+from openrelife import apple_vision_ocr
+
+_logger = logging.getLogger("openrelife.ocr")
 _doctr_predictor = None
 
 
@@ -51,10 +55,22 @@ def _extract_with_doctr(image: np.ndarray) -> Tuple[str, List[Dict]]:
     return text, words_with_coords
 
 
-def extract_text_from_image(image: np.ndarray) -> Tuple[str, List[Dict]]:
+def _extract_with_vision(image: np.ndarray) -> Tuple[str, List[Dict]]:
+    """OCR via Apple Vision framework. Returns (text, words_with_coords)."""
+    return apple_vision_ocr.extract_text_with_vision(image)
+
+
+def extract_text_from_image(image: np.ndarray,
+                            use_apple_vision: bool = False) -> Tuple[str, List[Dict]]:
     """Run OCR on an RGB image and return (text, words_with_coords).
 
-    words_with_coords: list of {text, x1, y1, x2, y2} with normalized
-    coordinates in [0, 1], top-left origin.
+    If `use_apple_vision` is True AND Apple Vision is available on this
+    platform, try Vision first and fall back to doctr on any exception.
+    Otherwise, use doctr directly.
     """
+    if use_apple_vision and apple_vision_ocr.is_apple_vision_available():
+        try:
+            return _extract_with_vision(image)
+        except Exception as e:
+            _logger.warning("Vision OCR failed (%s), falling back to doctr", e)
     return _extract_with_doctr(image)
