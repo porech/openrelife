@@ -1264,6 +1264,18 @@ def timeline_v2():
           </small>
         </div>
 
+        <div id="ocrEngineSection" style="display: none; margin-top: 16px;">
+          <label style="display:block; font-weight:600; margin-bottom:6px;">OCR Engine</label>
+          <label style="display:flex; align-items:center; gap:8px;">
+            <input type="checkbox" id="useAppleVisionCheckbox">
+            <span>Use Apple Vision (recommended, ~30× faster)</span>
+          </label>
+          <p style="margin-top:6px; color:#666; font-size:12px;">
+            Native macOS text recognition. Falls back to doctr automatically if a frame fails.
+            Available only on Mac with Apple Silicon.
+          </p>
+        </div>
+
         <div class="form-group" style="margin-top: 24px;">
           <label>
             OCR Compute Mode
@@ -2239,6 +2251,20 @@ def timeline_v2():
             .then(data => {
                 document.getElementById('portInput').value = data.port;
             });
+        // Load Apple Vision setting
+        fetch('/api/settings/apple_vision')
+          .then(r => r.json())
+          .then(d => {
+            const section = document.getElementById('ocrEngineSection');
+            const cb = document.getElementById('useAppleVisionCheckbox');
+            if (d.available) {
+              section.style.display = '';
+              cb.checked = !!d.enabled;
+            } else {
+              section.style.display = 'none';
+            }
+          })
+          .catch(e => console.warn('apple_vision settings fetch failed', e));
     }
 
     function checkIntervalWarning(val) {
@@ -2268,7 +2294,8 @@ def timeline_v2():
                 ocr_cooldown: document.getElementById('ocrCooldownInput').value,
                 ocr_compute_mode: document.getElementById('ocrComputeModeSelect').value,
                 skip_incognito: document.getElementById('skipIncognitoCheckbox').checked,
-                port: document.getElementById('portInput').value
+                port: document.getElementById('portInput').value,
+                use_apple_vision: document.getElementById('useAppleVisionCheckbox').checked
             })
         })
         .then(r => r.json())
