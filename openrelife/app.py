@@ -1550,9 +1550,14 @@ def timeline_v2():
             updateJumpButtonVisibility();
           }
 
-          // If currently viewing an entry that got OCR'd, refresh it
+          // Invalidate cached data for all updated entries so the next view
+          // fetches fresh OCR text via /api/entry/<ts> instead of stale stubs.
+          for (const ts of data.timestamps) {
+            delete entriesData[ts];
+          }
+
+          // If currently viewing an entry that got OCR'd, refresh it now
           if (currentEntry && data.timestamps.includes(currentEntry.timestamp)) {
-            delete entriesData[currentEntry.timestamp]; // invalidate cache
             updateDisplay(currentEntry.timestamp);
           }
         } else {
