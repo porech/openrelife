@@ -459,31 +459,112 @@ def get_entries_light(limit: int = None, min_timestamp: int = 0) -> List[LightEn
     return entries
 
 
-def search_entries_streaming(query_embedding: np.ndarray, query_text: str = "", limit: int = 20) -> List[dict]:
-    """Search entries using streaming cosine similarity — constant memory.
+# Absolute cosine floor: candidates below this are dropped outright (keyword
+# matches bypass it). Kept low because all-MiniLM-L6-v2 maps noisy OCR text into
+# a narrow cone where even good multi-word queries top out around 0.4 — a high
+# absolute floor would silently nuke legitimate searches.
+DEFAULT_MIN_SIMILARITY = 0.15
+# Adaptive relevance: keep entries scoring within this margin of the best match
+# for the query. Because the cosine scale is query-dependent, an absolute cutoff
+# can't separate good from bad queries; a margin relative to the top score does.
+DEFAULT_RELEVANCE_MARGIN = 0.12
+# Recency only nudges near-ties: bonus in [0, RECENCY_WEIGHT], decaying with age.
+RECENCY_WEIGHT = 0.1
+RECENCY_TAU_US = 7 * 24 * 60 * 60 * 1_000_000  # 7-day e-folding time, in microseconds
 
-    Iterates through all rows one at a time via a cursor, computes similarity
-    per-row, and keeps only the top-N results in a min-heap. Never loads all
-    entries into memory at once.
 
-    Returns a list of dicts sorted by final score descending.
+def _fetch_entries_by_ids(conn, ids: List[int]) -> dict:
+    """Fetch {id: {id, app, title, text, timestamp}} for the given ids."""
+    if not ids:
+        return {}
+    placeholders = ",".join("?" * len(ids))
+    cursor = conn.execute(
+        f"SELECT id, app, title, text, timestamp FROM entries WHERE id IN ({placeholders})",
+        ids,
+    )
+    out = {}
+    for row in cursor:
+        out[row["id"]] = {
+            'id': row["id"],
+            'app': row["app"],
+            'title': row["title"],
+            'text': row["text"],
+            'timestamp': row["timestamp"],
+        }
+    return out
+
+
+def search_entries_streaming(
+    query_embedding: np.ndarray,
+    query_text: str = "",
+    limit: int = 50,
+    offset: int = 0,
+    min_similarity: float = DEFAULT_MIN_SIMILARITY,
+    relevance_margin: float = DEFAULT_RELEVANCE_MARGIN,
+    now_us: Optional[int] = None,
+) -> dict:
+    """Search entries by semantic relevance, with an adaptive relevance floor.
+
+    Scans every row once, computing cosine similarity per row. A row becomes a
+    candidate if its similarity reaches ``min_similarity`` (a low absolute floor)
+    OR the query text matches its OCR text (keyword matches always qualify).
+    After the scan, an *adaptive* floor is applied: only candidates scoring within
+    ``relevance_margin`` of the best match for this query are kept. This adapts to
+    the query-dependent cosine scale of the embedding model, so weak queries yield
+    a smaller (or empty) set instead of being padded with unrelated entries, while
+    legitimate low-scoring queries are not nuked by a fixed cutoff.
+
+    Ranking is dominated by the semantic score, refined by a keyword boost and a
+    small recency bonus:
+
+        final_score = semantic_score + keyword_boost + recency_bonus
+        semantic_score in [-1, 1]; keyword_boost in [0, 0.5];
+        recency_bonus  = RECENCY_WEIGHT * exp(-age / RECENCY_TAU_US)  in [0, 0.1]
+
+    Supports offset/limit pagination over the full ranked, thresholded result set,
+    so older relevant entries remain reachable.
+
+    Memory: only lightweight per-candidate tuples (no OCR text) are held during
+    the scan; full rows for the requested page are re-fetched by id at the end.
+
+    Args:
+        query_embedding: query vector.
+        query_text: raw query string, used for keyword matching.
+        limit: page size.
+        offset: number of leading results to skip.
+        min_similarity: absolute cosine floor for non-keyword candidates.
+        relevance_margin: keep candidates with semantic_score >= top_score - margin.
+        now_us: reference "now" in microseconds for recency decay (defaults to
+            wall-clock time; injectable for deterministic tests).
+
+    Returns:
+        dict with keys ``results`` (list of entry dicts, best first),
+        ``total`` (number of entries passing the adaptive filter), ``offset``,
+        ``limit`` and ``has_more``.
     """
+    empty = {"results": [], "total": 0, "offset": offset, "limit": limit, "has_more": False}
+
     query_norm = np.linalg.norm(query_embedding)
     if query_norm == 0:
-        return []
+        return empty
+
+    if now_us is None:
+        import time
+        now_us = int(time.time() * 1_000_000)
 
     query_lower = query_text.lower() if query_text else ""
     query_words = query_lower.split() if query_lower else []
 
-    # Min-heap of (score, has_keyword, dict) — keeps top `limit` results
-    heap: list = []
+    # Lightweight candidates: (final_score, timestamp, semantic_score, has_keyword, id).
+    candidates: list = []
+    top_semantic = float("-inf")
 
     try:
         with _connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT id, app, title, text, timestamp, embedding FROM entries"
+                "SELECT id, text, timestamp, embedding FROM entries"
             )
 
             for row in cursor:
@@ -495,46 +576,60 @@ def search_entries_streaming(query_embedding: np.ndarray, query_text: str = "", 
                 semantic_score = float(np.dot(query_embedding, embedding) / (query_norm * emb_norm))
 
                 keyword_boost = 0.0
+                has_keyword = False
                 if query_lower:
                     text_lower = row["text"].lower() if row["text"] else ""
                     if query_lower in text_lower:
                         keyword_boost = 0.5
+                        has_keyword = True
                     elif query_words:
                         matched = sum(1 for w in query_words if w in text_lower)
                         if matched > 0:
                             keyword_boost = 0.3 * (matched / len(query_words))
+                            has_keyword = True
 
-                recency_score = row["timestamp"] / 1e10
-                final_score = semantic_score + keyword_boost + recency_score
-                has_keyword = keyword_boost > 0
+                # Absolute floor: drop the genuine bottom, unless the query text
+                # literally appears in the entry.
+                if semantic_score < min_similarity and not has_keyword:
+                    continue
 
-                # Heap key: (has_keyword, final_score) — we want highest first,
-                # but heapq is a min-heap, so we negate.
-                heap_key = (-int(has_keyword), -final_score)
+                age_us = max(0, now_us - row["timestamp"])
+                recency_bonus = RECENCY_WEIGHT * np.exp(-age_us / RECENCY_TAU_US)
+                final_score = semantic_score + keyword_boost + float(recency_bonus)
 
-                if len(heap) < limit:
-                    heapq.heappush(heap, (heap_key, {
-                        'id': row["id"],
-                        'app': row["app"],
-                        'title': row["title"],
-                        'text': row["text"],
-                        'timestamp': row["timestamp"],
-                    }))
-                elif heap_key < heap[0][0]:
-                    heapq.heapreplace(heap, (heap_key, {
-                        'id': row["id"],
-                        'app': row["app"],
-                        'title': row["title"],
-                        'text': row["text"],
-                        'timestamp': row["timestamp"],
-                    }))
+                if semantic_score > top_semantic:
+                    top_semantic = semantic_score
+                candidates.append((final_score, row["timestamp"], semantic_score,
+                                   has_keyword, row["id"]))
+
+            if not candidates:
+                return empty
+
+            # Adaptive floor relative to the best match for this query. Keyword
+            # matches are kept regardless so literal hits never disappear.
+            cutoff = top_semantic - relevance_margin
+            kept = [c for c in candidates if c[2] >= cutoff or c[3]]
+
+            # Best first: highest final_score, then newest.
+            kept.sort(key=lambda c: (c[0], c[1]), reverse=True)
+            total = len(kept)
+
+            page_meta = kept[offset:offset + limit]
+            page_ids = [c[4] for c in page_meta]
+            rows_by_id = _fetch_entries_by_ids(conn, page_ids)
+            page = [rows_by_id[i] for i in page_ids if i in rows_by_id]
 
     except sqlite3.Error as e:
         print(f"Database error during streaming search: {e}")
+        return empty
 
-    # Sort results: best first (smallest heap_key = best)
-    results = sorted(heap, key=lambda x: x[0])
-    return [item[1] for item in results]
+    return {
+        "results": page,
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "has_more": offset + len(page) < total,
+    }
 
 
 def get_entry_by_timestamp(timestamp: int) -> Optional[Entry]:

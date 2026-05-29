@@ -8,7 +8,7 @@ from jinja2 import BaseLoader
 from PIL import Image
 
 from openrelife.config import appdata_folder, screenshots_path
-from openrelife.database import create_db, get_timestamps, update_ai_ocr, delete_entries, get_entry_by_timestamp, get_entries_light, get_entries_metadata, get_timestamps_updated_since, search_entries_streaming
+from openrelife.database import create_db, get_timestamps, update_ai_ocr, delete_entries, get_entry_by_timestamp, get_entries_light, get_entries_metadata, get_timestamps_updated_since, search_entries_streaming, DEFAULT_MIN_SIMILARITY
 from openrelife.nlp import get_embedding
 from openrelife.screenshot import (
     record_screenshots_thread,
@@ -2008,7 +2008,9 @@ def timeline_v2():
 
       try {
         const response = await fetch(`/api/search?q=${encodeURIComponent(q)}`, { signal: searchController.signal });
-        const results = await response.json();
+        const data = await response.json();
+        // /api/search returns {results, total, offset, limit, has_more}.
+        const results = Array.isArray(data) ? data : (data.results || []);
 
         if (results.length === 0) {
           searchResults.innerHTML = '<p style="color: rgba(255,255,255,0.5); text-align: center;">No results found</p>';
@@ -2506,19 +2508,52 @@ def api_get_entry(timestamp):
 
 @app.route("/api/search")
 def api_search():
-    """API endpoint for search"""
+    """API endpoint for search.
+
+    Query params:
+        q: search text (required).
+        limit: page size (default 50, capped at 200).
+        offset: results to skip for pagination (default 0).
+        min_similarity: cosine floor for non-keyword matches (default from DB).
+
+    Returns {results: [{timestamp, text}], total, offset, limit, has_more}.
+    """
     q = request.args.get("q", "").strip()
     if not q:
-        return jsonify([])
-    
-    query_embedding = get_embedding(q)
-    results = search_entries_streaming(query_embedding, query_text=q, limit=20)
+        return jsonify({"results": [], "total": 0, "offset": 0,
+                        "limit": 0, "has_more": False})
 
-    # API returns only timestamp + text preview
-    return jsonify([
+    try:
+        limit = int(request.args.get("limit", 50))
+    except ValueError:
+        limit = 50
+    limit = max(1, min(limit, 200))
+
+    try:
+        offset = max(0, int(request.args.get("offset", 0)))
+    except ValueError:
+        offset = 0
+
+    min_similarity = DEFAULT_MIN_SIMILARITY
+    raw_min = request.args.get("min_similarity")
+    if raw_min is not None:
+        try:
+            min_similarity = float(raw_min)
+        except ValueError:
+            pass
+
+    query_embedding = get_embedding(q)
+    result = search_entries_streaming(
+        query_embedding, query_text=q,
+        limit=limit, offset=offset, min_similarity=min_similarity,
+    )
+
+    # API returns only timestamp + text preview per entry.
+    result["results"] = [
         {'timestamp': r['timestamp'], 'text': (r['text'] or '')[:200]}
-        for r in results
-    ])
+        for r in result["results"]
+    ]
+    return jsonify(result)
 
 
 @app.route("/api/sync")
