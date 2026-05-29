@@ -27,6 +27,7 @@ from openrelife.screenshot import (
     set_ocr_compute_mode,
     get_use_apple_vision,
     set_use_apple_vision,
+    ocr_one_frame,
 )
 from openrelife.apple_vision_ocr import is_apple_vision_available
 from openrelife.utils import human_readable_time, timestamp_to_human_readable
@@ -1610,6 +1611,8 @@ def timeline_v2():
     
     // Update display — single flow: show image immediately, fetch data on-demand
     async function updateDisplay(timestamp) {
+      // Moving to a new frame cancels any pending on-demand OCR for the old one.
+      clearTimeout(dwellTimer);
       // Image loads immediately (direct URL, no API needed)
       screenshot.src = `/static/${timestamp}.webp`;
       dateEl.textContent = new Date(timestamp / 1000).toLocaleString('en-US', {
@@ -1650,6 +1653,12 @@ def timeline_v2():
                       if (screenshot.complete) renderOverlay();
                       screenshot.onload = renderOverlay;
                       updateExtractedText();
+
+                      // Not OCR'd yet (stub): if the user lingers ~1s here, OCR it now.
+                      if (!data.text) {
+                          clearTimeout(dwellTimer);
+                          dwellTimer = setTimeout(() => ocrOnDwell(timestamp), 1000);
+                      }
                   }
               }
           } catch (e) {
@@ -1682,6 +1691,34 @@ def timeline_v2():
     // Prefetching Logic
     const fetchingMetadata = new Set();
     let prefetchTimeout = null;
+
+    // On-demand OCR: if the user lingers ~1s on a not-yet-OCR'd frame, run OCR
+    // for it on the fly (persisted + searchable) and refresh the text/overlay.
+    let dwellTimer = null;
+    async function ocrOnDwell(timestamp) {
+      const idx = timestamps.length - 1 - parseInt(slider.value);
+      if (timestamps[idx] !== timestamp) return;  // moved away before dwell fired
+      const extractedEl = document.getElementById('extractedText');
+      extractedEl.innerHTML = '<span class="text-muted"><i class="bi bi-arrow-clockwise spin-anim"></i> Reading text…</span>';
+      try {
+        const res = await fetch(`/api/ocr-now/${timestamp}`, { method: 'POST' });
+        const data = await res.json();
+        if (!data.success) { updateExtractedText(); return; }
+        const base = entriesData[timestamp] || { success: true, timestamp: timestamp, ai_text: null, ai_words_coords: [] };
+        base.text = data.text || '';
+        base.words_coords = data.words_coords || [];
+        entriesData[timestamp] = base;  // cache so we don't OCR it again
+        const idx2 = timestamps.length - 1 - parseInt(slider.value);
+        if (timestamps[idx2] === timestamp) {
+          currentEntry = base;
+          renderOverlay();
+          updateExtractedText();
+        }
+      } catch (e) {
+        console.error('on-demand OCR failed', e);
+        updateExtractedText();
+      }
+    }
 
     async function prefetchNeighbors(currentIndex) {
         const PREFETCH_RANGE = 20; // Fetch 20 frames before and after
@@ -2514,6 +2551,28 @@ def api_get_entry(timestamp):
         })
     else:
         return jsonify({'success': False, 'error': 'Entry not found'}), 404
+
+
+@app.route("/api/ocr-now/<int:timestamp>", methods=["POST"])
+def api_ocr_now(timestamp):
+    """On-demand OCR for a single frame (dwell-triggered from the timeline).
+
+    Runs the local OCR engine (Apple Vision when enabled) inline, persists the
+    text + embedding so the frame becomes searchable, and returns the result.
+    No-ops if the frame already has OCR text; 404 if the screenshot is gone.
+    """
+    entry = get_entry_by_timestamp(timestamp)
+    if entry and entry.text:
+        return jsonify({'success': True, 'already': True,
+                        'text': entry.text, 'words_coords': entry.words_coords})
+    try:
+        result = ocr_one_frame(timestamp, use_apple_vision=get_use_apple_vision())
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+    if result is None:
+        return jsonify({'success': False, 'error': 'Screenshot not found'}), 404
+    text, words_coords = result
+    return jsonify({'success': True, 'text': text, 'words_coords': words_coords})
 
 
 @app.route("/api/search")

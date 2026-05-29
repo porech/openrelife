@@ -390,6 +390,34 @@ def _get_battery_level() -> int:
     return 100
 
 
+def ocr_one_frame(ts, use_apple_vision=False):
+    """OCR a single captured frame by timestamp, persist its text + embedding,
+    and return (text, words_coords). Returns None if the screenshot file is gone.
+
+    Shared by the background worker and the on-demand (dwell-triggered) endpoint.
+    Lightweight enough to call inline on Apple Vision (no torch); doctr is only
+    lazy-loaded as a fallback when Vision is unavailable.
+    """
+    image_path = os.path.join(screenshots_path, f"{ts}.webp")
+    if not os.path.exists(image_path):
+        return None
+    img = Image.open(image_path).convert("RGB")
+    # Downscale to 1080p for OCR — same text quality, ~3x faster
+    w, h = img.size
+    if h > 1080:
+        scale = 1080 / h
+        img = img.resize((int(w * scale), 1080), Image.LANCZOS)
+    screenshot = np.array(img)
+    del img
+
+    text, words_coords = extract_text_from_image(screenshot, use_apple_vision=use_apple_vision)
+    del screenshot
+
+    embedding = get_embedding(text) if text.strip() else np.zeros(384, dtype=np.float32)
+    update_entry_ocr(ts, text, embedding, words_coords)
+    return text, words_coords
+
+
 def _process_ocr_batch(timestamps_list, num_threads=4, use_apple_vision=False):
     """Run OCR on a batch of timestamps in a subprocess.
 
@@ -402,23 +430,7 @@ def _process_ocr_batch(timestamps_list, num_threads=4, use_apple_vision=False):
 
     for ts in timestamps_list:
         try:
-            image_path = os.path.join(screenshots_path, f"{ts}.webp")
-            if not os.path.exists(image_path):
-                continue
-            img = Image.open(image_path).convert("RGB")
-            # Downscale to 1080p for OCR — same text quality, ~3x faster
-            w, h = img.size
-            if h > 1080:
-                scale = 1080 / h
-                img = img.resize((int(w * scale), 1080), Image.LANCZOS)
-            screenshot = np.array(img)
-            del img
-
-            text, words_coords = extract_text_from_image(screenshot, use_apple_vision=use_apple_vision)
-            del screenshot
-
-            embedding = get_embedding(text) if text.strip() else np.zeros(384, dtype=np.float32)
-            update_entry_ocr(ts, text, embedding, words_coords)
+            ocr_one_frame(ts, use_apple_vision=use_apple_vision)
         except Exception as e:
             print(f"OCR worker error for {ts}: {e}")
 
