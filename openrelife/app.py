@@ -8,7 +8,7 @@ from jinja2 import BaseLoader
 from PIL import Image
 
 from openrelife.config import appdata_folder, screenshots_path
-from openrelife.database import create_db, get_timestamps, update_ai_ocr, delete_entries, get_entry_by_timestamp, get_entries_light, get_entries_metadata, get_new_timestamps, search_entries_streaming, DEFAULT_MIN_SIMILARITY
+from openrelife.database import create_db, get_timestamps, update_ai_ocr, delete_entries, get_entry_by_timestamp, get_entries_light, get_entries_metadata, get_new_timestamps, search_entries_streaming, build_snippet, DEFAULT_MIN_SIMILARITY
 from openrelife.nlp import get_embedding
 from openrelife.screenshot import (
     record_screenshots_thread,
@@ -528,9 +528,50 @@ def timeline_v2():
       transform: scale(1.05); border-color: rgba(0,123,255,0.6);
       box-shadow: 0 8px 24px rgba(0,123,255,0.3);
     }
-    .result-card img { width: 100%; height: 120px; object-fit: cover; }
-    .result-time { padding: 8px 12px; font-size: 11px; color: rgba(255,255,255,0.6); text-align: center; }
-    
+    /* Film-develop reveal: thumbnails fade in as they load (post-scan "alive" feel). */
+    .result-card img { width: 100%; height: 120px; object-fit: cover; opacity: 0; transition: opacity 0.25s ease; }
+    .result-card img.loaded { opacity: 1; }
+    .result-time { padding: 8px 12px 2px; font-size: 11px; color: rgba(255,255,255,0.6); text-align: center; }
+    .result-snippet {
+      padding: 0 12px 10px; font-size: 11px; line-height: 1.35; color: rgba(255,255,255,0.55);
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word;
+    }
+    mark.search-mark { background: rgba(13,110,253,0.4); color: #eaf4ff; border-radius: 3px; padding: 0 1px; }
+    /* Keyboard selection: distinct focus ring, capped scale so edge cards aren't clipped. */
+    .result-card.selected {
+      transform: scale(1.03); border-color: rgba(0,123,255,0.6);
+      box-shadow: 0 8px 24px rgba(0,123,255,0.3);
+      outline: 2px solid rgba(77,155,255,0.95); outline-offset: 2px;
+    }
+    .search-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+    .search-count { font-size: 13px; color: rgba(255,255,255,0.55); }
+    .skeleton-card {
+      background: rgba(50,50,50,0.6); border-radius: 12px; height: 172px; position: relative; overflow: hidden;
+    }
+    .skeleton-card::after {
+      content: ""; position: absolute; inset: 0; transform: translateX(-100%);
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.07), transparent);
+      animation: orl-shimmer 1.3s linear infinite;
+    }
+    @keyframes orl-shimmer { to { transform: translateX(100%); } }
+    .load-more {
+      width: 100%; margin-top: 16px; padding: 10px; border-radius: 12px;
+      border: 1px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.05);
+      color: rgba(255,255,255,0.8); font-size: 13px; cursor: pointer; transition: all 0.15s;
+    }
+    .load-more:hover { border-color: rgba(13,110,253,0.6); background: rgba(13,110,253,0.18); }
+    .load-more[disabled] { opacity: 0.5; cursor: default; }
+    .search-empty, .search-error { text-align: center; padding: 30px 16px; color: rgba(255,255,255,0.55); }
+    .search-retry {
+      margin-top: 12px; padding: 8px 16px; border-radius: 10px; border: 1px solid rgba(13,110,253,0.6);
+      background: rgba(13,110,253,0.18); color: #eaf4ff; cursor: pointer;
+    }
+    .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+    @media (prefers-reduced-motion: reduce) {
+      .skeleton-card::after, .search-wrapper.searching::after { animation: none; }
+      .result-card img { transition: none; opacity: 1; }
+    }
+
     .clear-icon {
       position: absolute; right: 15px; top: 50%; transform: translateY(-50%);
       color: rgba(255,255,255,0.6); cursor: pointer; pointer-events: auto; z-index: 10;
@@ -1144,14 +1185,17 @@ def timeline_v2():
     <!-- Search bar -->
     <div class="search-container">
       <div class="search-wrapper" id="searchWrapper">
-        <input type="text" class="search-input" id="searchInput" placeholder="Search your history...">
+        <input type="text" class="search-input" id="searchInput" placeholder="Search your history..."
+               role="combobox" aria-expanded="false" aria-controls="resultsGrid"
+               aria-autocomplete="list" autocomplete="off">
         <i class="bi bi-search search-icon" id="searchIcon"></i>
         <i class="bi bi-x-circle-fill clear-icon" id="searchClear" style="display: none;"></i>
       </div>
     </div>
-    
+
     <!-- Search results -->
     <div class="search-results" id="searchResults"></div>
+    <div id="searchLive" class="visually-hidden" aria-live="polite"></div>
     
     <!-- Screenshot area -->
     <div class="screenshot-area" id="screenshotArea">
@@ -1811,10 +1855,11 @@ def timeline_v2():
 
          // Close search results if open
          if (searchResults && searchResults.classList.contains('show')) {
-           searchResults.classList.remove('show');
-           document.getElementById('searchInput').value = '';
+           resetSearchState();
+           searchInput.value = '';
            document.getElementById('searchIcon').style.display = 'block';
            document.getElementById('searchClear').style.display = 'none';
+           searchInput.focus();
            handled = true;
          }
          
@@ -2019,30 +2064,81 @@ def timeline_v2():
     const searchIcon = document.getElementById('searchIcon');
     const searchClear = document.getElementById('searchClear');
     const searchWrapper = document.getElementById('searchWrapper');
+    const searchLive = document.getElementById('searchLive');
 
-    // Search
+    // ---- Search: paginated (load-more), progressive, keyboard-navigable ----
+    const PAGE_SIZE = 30;
+    let searchState = { q: '', offset: 0, total: 0, hasMore: false, loading: false };
+    let selectedIndex = -1;   // -1 = input focused, no card selected
+    let searchReqId = 0;      // monotonic guard: an aborted search never touches a newer one's UI
+    let resultsGrid = null;
+
+    function announce(msg) { if (searchLive) searchLive.textContent = msg; }
+    function escapeHtml(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
+    function fmtTime(ts) {
+      return new Date(ts / 1000).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    }
+    // Treat a-z, 0-9 and any non-ASCII (accented letters) as word chars — used for
+    // whole-word match boundaries without regex (avoids escaping pitfalls + handles accents).
+    function isWordChar(ch) {
+      if (!ch) return false;
+      const c = ch.toLowerCase();
+      return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c.charCodeAt(0) > 127;
+    }
+    // Highlight query terms in `snippet` into `el` using textNodes + <mark>
+    // (XSS-safe; offsets computed in JS so no codepoint/UTF-16 drift).
+    function renderSnippet(el, snippet, terms) {
+      el.textContent = '';
+      if (!snippet) return;
+      const toks = terms.filter(t => t.length >= 2).map(t => t.toLowerCase());
+      if (!toks.length) { el.textContent = snippet; return; }
+      const low = snippet.toLowerCase();
+      const ranges = [];
+      for (const t of toks) {
+        let from = 0, idx;
+        while ((idx = low.indexOf(t, from)) !== -1) {
+          if (!isWordChar(snippet[idx - 1]) && !isWordChar(snippet[idx + t.length])) ranges.push([idx, idx + t.length]);
+          from = idx + t.length;
+        }
+      }
+      if (!ranges.length) { el.textContent = snippet; return; }
+      ranges.sort((a, b) => a[0] - b[0]);
+      const merged = [ranges[0]];
+      for (let k = 1; k < ranges.length; k++) {
+        const last = merged[merged.length - 1];
+        if (ranges[k][0] <= last[1]) last[1] = Math.max(last[1], ranges[k][1]);
+        else merged.push(ranges[k]);
+      }
+      let pos = 0;
+      for (const [s, e] of merged) {
+        if (s > pos) el.appendChild(document.createTextNode(snippet.slice(pos, s)));
+        const mk = document.createElement('mark'); mk.className = 'search-mark'; mk.textContent = snippet.slice(s, e);
+        el.appendChild(mk); pos = e;
+      }
+      if (pos < snippet.length) el.appendChild(document.createTextNode(snippet.slice(pos)));
+    }
+
+    function resetSearchState() {
+      if (searchController) searchController.abort();
+      searchReqId++;   // invalidate any already-resolved-but-not-yet-handled response
+      searchState = { q: '', offset: 0, total: 0, hasMore: false, loading: false };
+      selectedIndex = -1; resultsGrid = null;
+      searchWrapper.classList.remove('searching');
+      searchResults.classList.remove('show');
+      searchResults.innerHTML = '';
+      searchInput.setAttribute('aria-expanded', 'false');
+      searchInput.removeAttribute('aria-activedescendant');
+      announce('');
+    }
+
     searchInput.addEventListener('input', () => {
       clearTimeout(searchTimeout);
       const q = searchInput.value.trim();
-      
-      // Toggle icons
-      if (searchInput.value.length > 0) {
-        searchIcon.style.display = 'none';
-        searchClear.style.display = 'block';
-      } else {
-        searchIcon.style.display = 'block';
-        searchClear.style.display = 'none';
-      }
-      
-      if (!q) {
-        // Cancel any in-flight search and stop the border light immediately.
-        if (searchController) searchController.abort();
-        searchWrapper.classList.remove('searching');
-        searchResults.classList.remove('show');
-        return;
-      }
-
-      searchTimeout = setTimeout(() => performSearch(q), 600);
+      if (searchInput.value.length > 0) { searchIcon.style.display = 'none'; searchClear.style.display = 'block'; }
+      else { searchIcon.style.display = 'block'; searchClear.style.display = 'none'; }
+      if (!q) { resetSearchState(); return; }
+      // 500ms debounce: a cold scan is ~uncancellable server-side, so don't fire too eagerly.
+      searchTimeout = setTimeout(() => performSearch(q, { reset: true }), 500);
     });
 
     searchClear.addEventListener('click', () => {
@@ -2050,53 +2146,207 @@ def timeline_v2():
       searchInput.dispatchEvent(new Event('input'));
       searchInput.focus();
     });
-    
-    async function performSearch(q) {
+
+    function searchUrl(q, offset) {
+      const p = new URLSearchParams({ q: q, limit: String(PAGE_SIZE), offset: String(offset) });
+      return '/api/search?' + p.toString();
+    }
+
+    async function performSearch(q, opts) {
+      const reset = !opts || opts.reset !== false;
       if (searchController) searchController.abort();
       searchController = new AbortController();
+      const signal = searchController.signal;
+      const myReq = ++searchReqId;
 
-      // Loading indicator: sweep a light around the search bar border. Leave the
-      // search/clear icons as the input handler set them — no overlap.
-      searchWrapper.classList.add('searching');
-
-      try {
-        const response = await fetch(`/api/search?q=${encodeURIComponent(q)}`, { signal: searchController.signal });
-        const data = await response.json();
-        // /api/search returns {results, total, offset, limit, has_more}.
-        const results = Array.isArray(data) ? data : (data.results || []);
-
-        if (results.length === 0) {
-          searchResults.innerHTML = '<p style="color: rgba(255,255,255,0.5); text-align: center;">No results found</p>';
-        } else {
-          searchResults.innerHTML = '<div class="results-grid">' +
-            results.map(r => `
-              <div class="result-card" onclick="goToTimestamp(${r.timestamp})">
-                <img src="/static/${r.timestamp}.webp" alt="">
-                <div class="result-time">${new Date(r.timestamp/1000).toLocaleString('en-US', {
-                  month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'
-                })}</div>
-              </div>
-            `).join('') + '</div>';
-        }
+      if (reset) {
+        searchState = { q: q, offset: 0, total: 0, hasMore: false, loading: true };
+        selectedIndex = -1;
+        searchInput.removeAttribute('aria-activedescendant');  // old selected card is gone
+        renderSkeletons();
         searchResults.classList.add('show');
-      } catch (err) {
-        // A newer search aborted this one — it owns the indicator now, leave it.
-        if (err.name === 'AbortError') return;
-        console.error('Search error:', err);
+        searchInput.setAttribute('aria-expanded', 'true');
+        searchWrapper.classList.add('searching');
+        announce('Searching');
+      } else {
+        searchState.loading = true;
       }
 
-      // Done (success or non-abort error): stop the border light.
-      searchWrapper.classList.remove('searching');
+      try {
+        const resp = await fetch(searchUrl(q, searchState.offset), { signal: signal });
+        const data = await resp.json();
+        if (myReq !== searchReqId) return;        // a newer search owns the UI now
+        renderResults(data, { append: !reset });
+      } catch (err) {
+        if (err.name === 'AbortError' || myReq !== searchReqId) return;
+        if (reset) renderError(q); else renderLoadMoreError();
+      } finally {
+        if (myReq === searchReqId) {
+          searchState.loading = false;
+          searchWrapper.classList.remove('searching');
+        }
+      }
     }
-    
+
+    function renderSkeletons() {
+      searchResults.innerHTML =
+        '<div class="search-header"><span class="search-count">Searching…</span></div>' +
+        '<div class="results-grid" id="resultsGrid" role="listbox" aria-label="Search results"></div>';
+      resultsGrid = document.getElementById('resultsGrid');
+      for (let i = 0; i < 10; i++) { const s = document.createElement('div'); s.className = 'skeleton-card'; resultsGrid.appendChild(s); }
+    }
+
+    function renderResults(data, opts) {
+      const append = opts && opts.append;
+      searchState.total = data.total || 0;
+      searchState.hasMore = !!data.has_more;
+      const list = data.results || [];
+      searchState.offset = (data.offset || 0) + list.length;
+      const terms = searchState.q.toLowerCase().split(' ').filter(Boolean);
+
+      if (!append) {
+        searchResults.innerHTML =
+          '<div class="search-header"><span class="search-count"></span></div>' +
+          '<div class="results-grid" id="resultsGrid" role="listbox" aria-label="Search results"></div>';
+        resultsGrid = document.getElementById('resultsGrid');
+        selectedIndex = -1;
+        searchInput.removeAttribute('aria-activedescendant');
+        const count = searchState.total;
+        searchResults.querySelector('.search-count').textContent = count ? (count + ' result' + (count === 1 ? '' : 's')) : '';
+        if (list.length === 0) { renderEmpty(searchState.q); announce('No results'); return; }
+        announce(count + ' results');
+      }
+
+      appendCards(list, terms);
+      renderLoadMore();
+      if (append) announce('Loaded ' + list.length + ' more — ' + searchState.offset + ' of ' + searchState.total + ' shown');
+    }
+
+    function appendCards(list, terms) {
+      if (!resultsGrid) return;
+      for (const r of list) {
+        const card = document.createElement('div');
+        card.className = 'result-card'; card.id = 'rc-' + r.timestamp;
+        card.setAttribute('role', 'option'); card.tabIndex = -1; card.dataset.ts = r.timestamp;
+        const img = document.createElement('img');
+        img.loading = 'lazy'; img.decoding = 'async'; img.alt = '';
+        img.onload = () => img.classList.add('loaded');
+        img.src = '/static/' + r.timestamp + '.webp';
+        const time = document.createElement('div'); time.className = 'result-time'; time.textContent = fmtTime(r.timestamp);
+        const snip = document.createElement('div'); snip.className = 'result-snippet';
+        renderSnippet(snip, r.snippet || '', terms);
+        card.appendChild(img); card.appendChild(time); card.appendChild(snip);
+        resultsGrid.appendChild(card);
+      }
+    }
+
+    function renderLoadMore() {
+      let btn = document.getElementById('loadMore');
+      if (searchState.hasMore) {
+        if (!btn) { btn = document.createElement('button'); btn.id = 'loadMore'; btn.className = 'load-more'; searchResults.appendChild(btn); }
+        const left = Math.max(0, searchState.total - searchState.offset);
+        btn.disabled = false; btn.textContent = 'Load more' + (left ? ' (' + left + ' left)' : '');
+      } else if (btn) { btn.remove(); }
+    }
+
+    async function loadMore() {
+      if (!searchState.hasMore || searchState.loading) return;
+      const btn = document.getElementById('loadMore');
+      if (btn) { btn.disabled = true; btn.textContent = 'Loading…'; }
+      await performSearch(searchState.q, { reset: false });
+    }
+
+    function renderLoadMoreError() {
+      const btn = document.getElementById('loadMore');
+      if (btn) { btn.disabled = false; btn.textContent = 'Retry'; }
+    }
+
+    function renderEmpty(q) {
+      searchResults.innerHTML =
+        '<div class="search-empty"><i class="bi bi-search" style="font-size:28px;opacity:0.5"></i>' +
+        '<p style="margin:12px 0 4px">No results for "' + escapeHtml(q) + '"</p>' +
+        '<p style="font-size:12px;opacity:0.7">Search reads on-screen text (OCR). Try fewer or different words.</p></div>';
+    }
+
+    function renderError(q) {
+      searchResults.innerHTML =
+        '<div class="search-error"><i class="bi bi-exclamation-triangle" style="font-size:24px;opacity:0.6"></i>' +
+        '<p style="margin:12px 0">Search failed</p><button class="search-retry" id="searchRetry">Retry</button></div>';
+      announce('Search failed');
+      const rb = document.getElementById('searchRetry');
+      if (rb) rb.onclick = () => performSearch(q, { reset: true });
+    }
+
+    // Keyboard navigation across the results grid (combobox + listbox pattern).
+    function gridColumns() {
+      if (!resultsGrid) return 1;
+      const tmpl = getComputedStyle(resultsGrid).gridTemplateColumns.split(' ').filter(Boolean).length;
+      if (tmpl >= 1) return tmpl;
+      const card = resultsGrid.querySelector('.result-card');
+      if (card) return Math.max(1, Math.round(resultsGrid.clientWidth / card.getBoundingClientRect().width));
+      return 1;
+    }
+    function cardEls() { return resultsGrid ? Array.from(resultsGrid.querySelectorAll('.result-card')) : []; }
+    function clearSelection() {
+      cardEls().forEach(c => c.classList.remove('selected'));
+      selectedIndex = -1;
+      searchInput.removeAttribute('aria-activedescendant');
+    }
+    function selectCard(i) {
+      const cs = cardEls(); if (!cs.length) return;
+      i = Math.max(0, Math.min(i, cs.length - 1));
+      cs.forEach((c, j) => c.classList.toggle('selected', j === i));
+      selectedIndex = i;
+      const c = cs[i];
+      c.scrollIntoView({ block: 'nearest' });
+      searchInput.setAttribute('aria-activedescendant', c.id);   // set only now that the card is in the DOM
+    }
+    searchInput.addEventListener('keydown', async (e) => {
+      if (!searchResults.classList.contains('show')) return;
+      const cs = cardEls(); const cols = gridColumns();
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        if (selectedIndex === -1) { if (cs.length) selectCard(0); }
+        else if (selectedIndex + cols < cs.length) selectCard(selectedIndex + cols);
+        else if (searchState.hasMore) { await loadMore(); selectCard(selectedIndex + cols); }
+      } else if (e.key === 'ArrowUp') {
+        if (selectedIndex === -1) return;
+        e.preventDefault();
+        if (selectedIndex - cols >= 0) selectCard(selectedIndex - cols);
+        else clearSelection();
+      } else if (e.key === 'ArrowRight') {
+        if (selectedIndex >= 0) { e.preventDefault(); selectCard(selectedIndex + 1); }
+      } else if (e.key === 'ArrowLeft') {
+        if (selectedIndex > 0) { e.preventDefault(); selectCard(selectedIndex - 1); }
+      } else if (e.key === 'Home') {
+        if (cs.length) { e.preventDefault(); selectCard(0); }
+      } else if (e.key === 'End') {
+        if (cs.length) { e.preventDefault(); if (searchState.hasMore) await loadMore(); selectCard(cardEls().length - 1); }
+      } else if (e.key === 'Enter') {
+        if (selectedIndex >= 0 && cs[selectedIndex]) { e.preventDefault(); goToTimestamp(parseInt(cs[selectedIndex].dataset.ts)); }
+      }
+      // Escape is handled by the global key handler (calls resetSearchState).
+    });
+
+    // Delegated activation: card click and the load-more button.
+    searchResults.addEventListener('click', (e) => {
+      const card = e.target.closest('.result-card');
+      if (card && card.dataset.ts) { goToTimestamp(parseInt(card.dataset.ts)); return; }
+      if (e.target.closest('#loadMore')) loadMore();
+    });
+
     function goToTimestamp(ts) {
       const idx = timestamps.indexOf(ts);
       if (idx !== -1) {
         slider.value = timestamps.length - 1 - idx;
-        updateDisplay(ts);
-        searchInput.value = '';
-        searchInput.dispatchEvent(new Event('input'));
       }
+      // Show the frame even if it isn't in the timeline array yet (e.g. captured
+      // after page load, before the next sync poll) — never a silent no-op.
+      updateDisplay(ts);
+      resetSearchState();
+      searchInput.value = '';
+      searchIcon.style.display = 'block';
+      searchClear.style.display = 'none';
     }
     
     // Sidebar
@@ -2520,13 +2770,13 @@ def timeline_v2():
         // Close text popup
         closeTextPopup();
         
-        // Close search results
-        const searchResults = document.getElementById('searchResults');
+        // Close search results (route through resetSearchState so the combobox
+        // ARIA state — aria-expanded / aria-activedescendant — is reset too).
         if (searchResults.classList.contains('show')) {
-          searchResults.classList.remove('show');
-          document.getElementById('searchInput').value = '';
-          document.getElementById('searchIcon').style.display = 'block';
-          document.getElementById('searchClear').style.display = 'none';
+          resetSearchState();
+          searchInput.value = '';
+          searchIcon.style.display = 'block';
+          searchClear.style.display = 'none';
         }
 
         // Exit delete mode
@@ -2584,15 +2834,17 @@ def api_ocr_now(timestamp):
 
 @app.route("/api/search")
 def api_search():
-    """API endpoint for search.
+    """API endpoint for search (paginated, cached).
 
     Query params:
         q: search text (required).
         limit: page size (default 50, capped at 200).
         offset: results to skip for pagination (default 0).
-        min_similarity: cosine floor for non-keyword matches (default from DB).
+        since/until: optional timestamp window (microseconds).
+        app: optional exact app-name filter.
 
-    Returns {results: [{timestamp, text}], total, offset, limit, has_more}.
+    Returns {results: [{timestamp, app, title, snippet}], total, offset, limit,
+    has_more}. The snippet is a centered preview; the client highlights matches.
     """
     q = request.args.get("q", "").strip()
     if not q:
@@ -2610,23 +2862,31 @@ def api_search():
     except ValueError:
         offset = 0
 
-    min_similarity = DEFAULT_MIN_SIMILARITY
-    raw_min = request.args.get("min_similarity")
-    if raw_min is not None:
+    def _int_arg(name):
+        raw = request.args.get(name)
+        if raw is None:
+            return None
         try:
-            min_similarity = float(raw_min)
+            return int(raw)
         except ValueError:
-            pass
+            return None
+
+    since = _int_arg("since")
+    until = _int_arg("until")
+    app_filter = request.args.get("app") or None
 
     query_embedding = get_embedding(q)
     result = search_entries_streaming(
         query_embedding, query_text=q,
-        limit=limit, offset=offset, min_similarity=min_similarity,
+        limit=limit, offset=offset,
+        since=since, until=until, app=app_filter,
     )
 
-    # API returns only timestamp + text preview per entry.
+    # Reshape each result for the client: a centered, inline snippet (the client
+    # re-derives and highlights matches) instead of the raw OCR text.
     result["results"] = [
-        {'timestamp': r['timestamp'], 'text': (r['text'] or '')[:200]}
+        {'timestamp': r['timestamp'], 'app': r['app'], 'title': r['title'],
+         'snippet': build_snippet(r['text'], q)}
         for r in result["results"]
     ]
     return jsonify(result)
@@ -3281,7 +3541,7 @@ def search():
 
     # Enrich results with words_coords for the classic search view
     sorted_entries = []
-    for r in search_results:
+    for r in search_results["results"]:
         entry = get_entry_by_timestamp(r['timestamp'])
         sorted_entries.append({
             'id': r['id'],

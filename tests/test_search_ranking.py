@@ -52,6 +52,9 @@ class TestSearchRanking(unittest.TestCase):
         conn.execute("DELETE FROM entries")
         conn.commit()
         conn.close()
+        # The per-query ranked cache and freshness token are module-level state;
+        # clear them so rankings don't leak across tests (different rows).
+        openrelife.database._invalidate_rank_cache()
 
     def test_semantic_relevance_beats_recency(self):
         """An old but semantically identical entry must outrank a recent unrelated one."""

@@ -1,7 +1,9 @@
 import heapq
 import re
 import sqlite3
-from collections import namedtuple
+import threading
+import time
+from collections import namedtuple, OrderedDict
 import numpy as np
 import json
 from typing import Any, List, Optional, Tuple
@@ -310,6 +312,11 @@ def delete_entries(timestamps: List[int]) -> int:
             deleted_count = cursor.rowcount
     except sqlite3.Error as e:
         print(f"Database error during deletion: {e}")
+    if deleted_count:
+        # A delete can leave deleted ids inside cached rankings (and over-report
+        # total) until the freshness token catches the COUNT change. Deletes are
+        # rare, explicit user actions — clear the cache outright to stay correct.
+        _invalidate_rank_cache()
     return deleted_count
 
 
@@ -505,6 +512,67 @@ DEFAULT_RELEVANCE_MARGIN = 0.12
 # the previous) into a single representative so results show distinct moments.
 DEFAULT_DEDUPE_WINDOW_US = 120 * 1_000_000  # 2 minutes
 
+# ---------------------------------------------------------------------------
+# Per-query ranked-id cache.
+#
+# search_entries_streaming does a full ~150k-row scan that costs ~18s. The ONLY
+# durable product of that scan is the ranked id list, so we cache exactly that
+# per (normalized query + filters): the first query pays ~18s once, and every
+# subsequent page is ranked_ids[offset:offset+limit] -> _fetch_entries_by_ids
+# (an indexed lookup over <=50 rows, single-digit ms). This is what makes
+# pagination / "load more" instant instead of ~18s per page.
+#
+# Invalidation uses a freshness token = (MAX(timestamp) << 24) ^ COUNT(*).
+# Verified against the live code: insert_entry_stub writes the final timestamp at
+# insert and update_entry_ocr only touches text/embedding/words_coords/updated_at
+# (never timestamp or row count), so the token is STABLE while the OCR worker
+# drains its backlog continuously, and changes only when /api/sync ingests a
+# genuinely new capture (or on delete — see delete_entries, which clears outright).
+_RANK_CACHE: "OrderedDict[tuple, dict]" = OrderedDict()
+_RANK_CACHE_LOCK = threading.Lock()
+_RANK_CACHE_CAP = 32          # LRU capacity (distinct query+filter combos)
+_RANK_IDS_CAP = 5000          # bound stored ids per query (load-more past this is implausible)
+_TOKEN_TTL_US = 1_000_000     # recompute the freshness token at most once/sec
+_token_cache = {"value": None, "at_us": 0}
+# Coalesce concurrent identical cold builds: the HTTP layer can't cancel a
+# running scan, so without this a user pausing mid-type could fire two requests
+# for the same query and run the ~18s scan twice. Second caller waits, then reads.
+_INFLIGHT: dict = {}
+
+
+def _cache_key(query_text, min_similarity, relevance_margin, dedupe_window_us, since, until, app):
+    q = " ".join((query_text or "").lower().split())
+    # app is NOT lowercased: the scan filters with a case-sensitive `app = ?`,
+    # so the key must preserve case or it would serve cross-case cached results.
+    return (q, round(min_similarity, 4), round(relevance_margin, 4), dedupe_window_us,
+            since or 0, until or 0, app or "")
+
+
+def _freshness_token() -> int:
+    """(MAX(timestamp)<<24) ^ COUNT(*), TTL-gated so rapid load-more clicks don't
+    re-query. Changes only on new captures/deletes, not on OCR text fills."""
+    now = int(time.time() * 1_000_000)
+    if _token_cache["value"] is not None and now - _token_cache["at_us"] < _TOKEN_TTL_US:
+        return _token_cache["value"]
+    tok = 0
+    try:
+        with _connect() as conn:
+            row = conn.execute("SELECT MAX(timestamp) AS m, COUNT(*) AS c FROM entries").fetchone()
+            tok = ((row[0] or 0) << 24) ^ (row[1] or 0)
+    except sqlite3.Error as e:
+        print(f"Database error computing freshness token: {e}")
+    _token_cache["value"] = tok
+    _token_cache["at_us"] = now
+    return tok
+
+
+def _invalidate_rank_cache():
+    """Drop all cached rankings (and force a token recompute). Called on deletes,
+    which — unlike the continuous OCR path — are rare, explicit user actions."""
+    with _RANK_CACHE_LOCK:
+        _RANK_CACHE.clear()
+    _token_cache["value"] = None
+
 
 def _fetch_entries_by_ids(conn, ids: List[int]) -> dict:
     """Fetch {id: {id, app, title, text, timestamp}} for the given ids."""
@@ -527,62 +595,18 @@ def _fetch_entries_by_ids(conn, ids: List[int]) -> dict:
     return out
 
 
-def search_entries_streaming(
-    query_embedding: np.ndarray,
-    query_text: str = "",
-    limit: int = 50,
-    offset: int = 0,
-    min_similarity: float = DEFAULT_MIN_SIMILARITY,
-    relevance_margin: float = DEFAULT_RELEVANCE_MARGIN,
-    dedupe_window_us: int = DEFAULT_DEDUPE_WINDOW_US,
-    now_us: Optional[int] = None,
-) -> dict:
-    """Search entries with a keyword-first, recency-ordered ranking.
+def _ranked_ids_for_query(query_embedding, query_text, min_similarity,
+                          relevance_margin, dedupe_window_us,
+                          since=None, until=None, app=None):
+    """The ~18s hot path: full scan + keyword-first/semantic ranking + dedupe.
 
-    This is a recall tool: users type words they remember seeing, so a literal
-    text match is the strongest, most intuitive signal. Results are therefore
-    grouped into two tiers, keyword matches always ranked above semantic-only
-    matches:
-
-      Tier 1 — entries whose OCR text contains the query terms (whole-word match,
-        not substring: "cani" matches the word "cani", not "meccanici"). Ordered
-        by match strength (full-phrase match > partial word match), then **most
-        recent first**. This gives the predictable "recent things containing X" order
-        users expect, instead of an order driven by invisible, near-tied cosine
-        scores.
-      Tier 2 — entries with no literal match but a strong semantic similarity.
-        Included only within ``relevance_margin`` of the best match for the query
-        (an adaptive floor, since the cosine scale is query-dependent), then
-        ordered by similarity and recency. Acts as a fallback when few/no entries
-        literally contain the query.
-
-    Supports offset/limit pagination over the full ranked set, so older relevant
-    entries remain reachable.
-
-    Memory: only lightweight per-candidate tuples (no OCR text) are held during
-    the scan; full rows for the requested page are re-fetched by id at the end.
-
-    Args:
-        query_embedding: query vector.
-        query_text: raw query string, used for keyword matching.
-        limit: page size.
-        offset: number of leading results to skip.
-        min_similarity: absolute cosine floor for non-keyword candidates.
-        relevance_margin: keep semantic-only matches with score >= top - margin.
-        dedupe_window_us: consecutive same-window captures (same app+title) within
-            this gap collapse to one result; 0 disables deduplication.
-        now_us: accepted for backward compatibility; unused (recency is now a
-            strict timestamp tiebreak, not a decaying bonus).
-
-    Returns:
-        dict with keys ``results`` (list of entry dicts, best first), ``total``
-        (entries passing the filter), ``offset``, ``limit`` and ``has_more``.
+    Returns (ranked_ids, total) — the COMPLETE ranked id list (not a page). Paging
+    and caching are handled by search_entries_streaming. Optional since/until/app
+    narrow the scan via a WHERE clause (also used for Phase-2 filters).
     """
-    empty = {"results": [], "total": 0, "offset": offset, "limit": limit, "has_more": False}
-
     query_norm = np.linalg.norm(query_embedding)
     if query_norm == 0:
-        return empty
+        return [], 0
 
     query_lower = query_text.lower() if query_text else ""
     # Whole-word matching: ignore 1-char tokens (e.g. Italian "e"/"a"), and match
@@ -593,8 +617,21 @@ def search_entries_streaming(
     # otherwise fall back to a substring match here and re-introduce the bug).
     phrase_re = re.compile(r"\b" + re.escape(query_lower) + r"\b") if query_lower else None
 
-    # Lightweight candidates:
-    # (has_keyword, keyword_strength, semantic, timestamp, id, app, title).
+    where, params = [], []
+    if since:
+        where.append("timestamp >= ?"); params.append(since)
+    if until:
+        where.append("timestamp <= ?"); params.append(until)
+    if app:
+        where.append("app = ?"); params.append(app)
+    sql = "SELECT id, app, title, text, timestamp, embedding FROM entries"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+
+    # Lightweight candidates: (has_keyword, keyword_strength, semantic, timestamp,
+    # id, app, title). app/title are kept (not hashed) so the run-dedupe below
+    # compares the exact window signature — a hash could false-collapse two
+    # distinct adjacent windows on a collision.
     candidates: list = []
     top_semantic = float("-inf")
 
@@ -602,9 +639,7 @@ def search_entries_streaming(
         with _connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute(
-                "SELECT id, app, title, text, timestamp, embedding FROM entries"
-            )
+            cursor.execute(sql, params)
 
             for row in cursor:
                 embedding = np.frombuffer(row["embedding"], dtype=np.float32)
@@ -614,24 +649,18 @@ def search_entries_streaming(
 
                 semantic_score = float(np.dot(query_embedding, embedding) / (query_norm * emb_norm))
 
-                # keyword_strength: 1.0 for a full-phrase hit, else the fraction
-                # of query words present; 0.0 if the text matches nothing.
                 keyword_strength = 0.0
                 if query_lower:
                     text_lower = row["text"].lower() if row["text"] else ""
                     if query_lower in text_lower and phrase_re.search(text_lower):
                         keyword_strength = 1.0
                     elif word_res:
-                        # Cheap substring pre-check short-circuits the regex on the
-                        # vast majority of rows that don't contain the token at all.
                         matched = sum(1 for w, rx in word_res
                                       if w in text_lower and rx.search(text_lower))
                         if matched > 0:
                             keyword_strength = matched / len(word_res)
                 has_keyword = keyword_strength > 0.0
 
-                # Absolute floor: drop the genuine bottom, unless the query text
-                # literally appears in the entry.
                 if semantic_score < min_similarity and not has_keyword:
                     continue
 
@@ -642,10 +671,10 @@ def search_entries_streaming(
                                    row["app"] or "", row["title"] or ""))
 
             if not candidates:
-                return empty
+                return [], 0
 
-            # Tier 2 (semantic-only) is gated by an adaptive floor relative to the
-            # best match. Tier 1 (keyword) bypasses it so literal hits never drop.
+            # Tier 2 (semantic-only) gated by an adaptive floor relative to the
+            # best match; Tier 1 (keyword) bypasses it so literal hits never drop.
             cutoff = top_semantic - relevance_margin
             kept = [c for c in candidates if c[0] or c[2] >= cutoff]
 
@@ -657,9 +686,7 @@ def search_entries_streaming(
                 c[3],
             ), reverse=True)
 
-            # Collapse runs of the same window (same tier + app + title) whose
-            # captures are within dedupe_window_us of each other, keeping the
-            # first (highest-ranked / most recent) of each run.
+            # Collapse runs of the same window (same sig within dedupe_window_us).
             if dedupe_window_us and dedupe_window_us > 0:
                 deduped = []
                 prev_sig = None
@@ -675,18 +702,113 @@ def search_entries_streaming(
                     prev_ts = c[3]
                 kept = deduped
 
-            total = len(kept)
-
-            page_meta = kept[offset:offset + limit]
-            page_ids = [c[4] for c in page_meta]
-            rows_by_id = _fetch_entries_by_ids(conn, page_ids)
-            # Preserve ranked order (page_ids may repeat ids only if duplicated,
-            # which dedupe prevents); map back by id.
-            page = [rows_by_id[i] for i in page_ids if i in rows_by_id]
+            return [c[4] for c in kept], len(kept)
 
     except sqlite3.Error as e:
         print(f"Database error during streaming search: {e}")
+        return [], 0
+
+
+def search_entries_streaming(
+    query_embedding: np.ndarray,
+    query_text: str = "",
+    limit: int = 50,
+    offset: int = 0,
+    min_similarity: float = DEFAULT_MIN_SIMILARITY,
+    relevance_margin: float = DEFAULT_RELEVANCE_MARGIN,
+    dedupe_window_us: int = DEFAULT_DEDUPE_WINDOW_US,
+    since: Optional[int] = None,
+    until: Optional[int] = None,
+    app: Optional[str] = None,
+    now_us: Optional[int] = None,
+) -> dict:
+    """Paginated keyword-first search, backed by a per-query ranked-id cache.
+
+    The expensive ranking scan runs at most once per (normalized query + filters)
+    until new captures arrive: the first page pays ~18s, every subsequent page is
+    served instantly by slicing the cached ranked id list and re-fetching only the
+    page's rows. See the cache notes near the top of this module.
+
+    Args:
+        query_embedding, query_text, min_similarity, relevance_margin,
+        dedupe_window_us: ranking parameters (see _ranked_ids_for_query).
+        limit/offset: page window over the ranked set.
+        since/until/app: optional filters (microsecond timestamps / app name).
+        now_us: accepted for backward compatibility; unused.
+
+    Returns dict {results, total, offset, limit, has_more}. ``total`` is capped to
+    the number of reachable (cached) ids so the count never over-reports.
+    """
+    empty = {"results": [], "total": 0, "offset": offset, "limit": limit, "has_more": False}
+
+    token = _freshness_token()
+    key = _cache_key(query_text, min_similarity, relevance_margin, dedupe_window_us,
+                     since, until, app)
+
+    def _build():
+        ids, tot = _ranked_ids_for_query(query_embedding, query_text, min_similarity,
+                                         relevance_margin, dedupe_window_us, since, until, app)
+        ids = ids[:_RANK_IDS_CAP]
+        return ids, min(tot, len(ids))  # honest total: never exceeds reachable ids
+
+    ranked_ids = None
+    total = 0
+    with _RANK_CACHE_LOCK:
+        entry = _RANK_CACHE.get(key)
+        if entry is not None and entry["token"] == token:
+            _RANK_CACHE.move_to_end(key)
+            ranked_ids, total = entry["ids"], entry["total"]
+        else:
+            ev = _INFLIGHT.get(key)
+            if ev is None:
+                ev = threading.Event()
+                _INFLIGHT[key] = ev
+                iam_builder = True
+            else:
+                iam_builder = False
+
+    if ranked_ids is None:
+        if iam_builder:
+            try:
+                ranked_ids, total = _build()
+                now = int(time.time() * 1_000_000)
+                with _RANK_CACHE_LOCK:
+                    _RANK_CACHE[key] = {"ids": ranked_ids, "total": total,
+                                        "created_us": now, "token": token}
+                    _RANK_CACHE.move_to_end(key)
+                    while len(_RANK_CACHE) > _RANK_CACHE_CAP:
+                        _RANK_CACHE.popitem(last=False)
+            finally:
+                with _RANK_CACHE_LOCK:
+                    if _INFLIGHT.get(key) is ev:
+                        del _INFLIGHT[key]
+                ev.set()
+        else:
+            # Another thread is already building this exact query — wait for it
+            # rather than launching a duplicate ~18s scan (the server can't honor
+            # the client's AbortController on a CPU-bound scan).
+            ev.wait(timeout=120)
+            with _RANK_CACHE_LOCK:
+                entry = _RANK_CACHE.get(key)
+            if entry is not None and entry["token"] == token:
+                ranked_ids, total = entry["ids"], entry["total"]
+            else:
+                ranked_ids, total = _build()  # builder failed / token moved; do it ourselves
+
+    if not ranked_ids:
+        return {"results": [], "total": total, "offset": offset,
+                "limit": limit, "has_more": False}
+
+    page_ids = ranked_ids[offset:offset + limit]
+    try:
+        with _connect() as conn:
+            conn.row_factory = sqlite3.Row
+            rows_by_id = _fetch_entries_by_ids(conn, page_ids)
+    except sqlite3.Error as e:
+        print(f"Database error fetching search page: {e}")
         return empty
+    # Preserve ranked order; tolerate ids deleted since the ranking was cached.
+    page = [rows_by_id[i] for i in page_ids if i in rows_by_id]
 
     return {
         "results": page,
@@ -695,6 +817,30 @@ def search_entries_streaming(
         "limit": limit,
         "has_more": offset + len(page) < total,
     }
+
+
+def build_snippet(text: str, query_text: str, width: int = 160) -> str:
+    """A short, single-line preview window centered on the first whole-word match
+    of the query (or the start of the text if none). Whitespace is collapsed so
+    newline-heavy OCR text reads inline. The frontend highlights matches itself
+    (re-derives them in JS) to avoid Python-codepoint vs JS-UTF16 offset drift.
+    """
+    text = " ".join((text or "").split())
+    if not text:
+        return ""
+    words = [w for w in (query_text or "").lower().split() if len(w) >= 2]
+    low = text.lower()
+    first = -1
+    for w in words:
+        m = re.search(r"\b" + re.escape(w) + r"\b", low)
+        if m and (first == -1 or m.start() < first):
+            first = m.start()
+    if first < 0:
+        return text[:width] + ("…" if len(text) > width else "")
+    start = max(0, first - width // 3)
+    end = start + width
+    return (("…" if start > 0 else "") + text[start:end]
+            + ("…" if end < len(text) else ""))
 
 
 def get_entry_by_timestamp(timestamp: int) -> Optional[Entry]:
