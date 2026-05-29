@@ -494,10 +494,17 @@ def timeline_v2():
       -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
       -webkit-mask-composite: xor; mask-composite: exclude;
       filter: drop-shadow(0 0 4px rgba(77,155,255,0.8)) drop-shadow(0 0 9px rgba(13,110,253,0.55));
-      animation: orl-border-sweep 1.1s linear infinite;
+      animation: orl-border-sweep 2.4s linear infinite;
       pointer-events: none; z-index: 3;
     }
-    @keyframes orl-border-sweep { to { --orl-angle: 360deg; } }
+    /* One sweep, then fade out and pause before the next pass. */
+    @keyframes orl-border-sweep {
+      0%   { --orl-angle: 0deg;   opacity: 0; }
+      5%   { opacity: 1; }
+      58%  { --orl-angle: 360deg; opacity: 1; }
+      66%  { --orl-angle: 360deg; opacity: 0; }
+      100% { --orl-angle: 360deg; opacity: 0; }
+    }
     
     /* Search results */
     .search-results {
