@@ -8,7 +8,7 @@ from jinja2 import BaseLoader
 from PIL import Image
 
 from openrelife.config import appdata_folder, screenshots_path
-from openrelife.database import create_db, get_timestamps, update_ai_ocr, delete_entries, get_entry_by_timestamp, get_entries_light, get_entries_metadata, get_timestamps_updated_since, search_entries_streaming, DEFAULT_MIN_SIMILARITY
+from openrelife.database import create_db, get_timestamps, update_ai_ocr, delete_entries, get_entry_by_timestamp, get_entries_light, get_entries_metadata, get_new_timestamps, search_entries_streaming, DEFAULT_MIN_SIMILARITY
 from openrelife.nlp import get_embedding
 from openrelife.screenshot import (
     record_screenshots_thread,
@@ -1533,33 +1533,23 @@ def timeline_v2():
 
         if (data.sync_cursor) syncCursor = data.sync_cursor;
 
-        if (data.timestamps && data.timestamps.length > 0) {
-          const existingSet = new Set(timestamps);
-          const newTimestamps = data.timestamps.filter(ts => !existingSet.has(ts));
+        // /api/sync returns only newly captured timestamps (timestamp > cursor),
+        // bounded and oldest-first. They are strictly newer than all existing
+        // history, so no membership check or full-array Set is needed — that
+        // O(N) work per poll is what previously froze the UI during OCR backlogs.
+        const incoming = data.timestamps || [];
+        if (incoming.length > 0) {
+          const newest = incoming.slice().reverse();  // oldest-first -> newest-first
+          timestamps = [...newest, ...timestamps];
+          slider.max = timestamps.length - 1;
+          showSyncIndicator(newest.length);
 
-          if (newTimestamps.length > 0) {
-            timestamps = [...newTimestamps, ...timestamps];
-            slider.max = timestamps.length - 1;
-            showSyncIndicator(newTimestamps.length);
-
-            if (wasAtLatest) {
-               slider.value = slider.max;
-               updateDisplay(timestamps[0]);
-            }
-
-            updateJumpButtonVisibility();
+          if (wasAtLatest) {
+             slider.value = slider.max;
+             updateDisplay(timestamps[0]);
           }
 
-          // Invalidate cached data for all updated entries so the next view
-          // fetches fresh OCR text via /api/entry/<ts> instead of stale stubs.
-          for (const ts of data.timestamps) {
-            delete entriesData[ts];
-          }
-
-          // If currently viewing an entry that got OCR'd, refresh it now
-          if (currentEntry && data.timestamps.includes(currentEntry.timestamp)) {
-            updateDisplay(currentEntry.timestamp);
-          }
+          updateJumpButtonVisibility();
         } else {
           hideSyncIndicator();
         }
@@ -1615,14 +1605,18 @@ def timeline_v2():
         hour: 'numeric', minute: '2-digit', hour12: true
       });
 
-      // If cached, show instantly
-      if (entriesData[timestamp]) {
-          currentEntry = entriesData[timestamp];
+      // Use cache only if it holds a real OCR result. A frame cached while it
+      // was still a not-yet-OCR'd stub has text === null; refetch it so the OCR
+      // text shows up once the worker has processed it (replaces the old bulk
+      // cache-invalidation that flooded /api/sync).
+      const cached = entriesData[timestamp];
+      if (cached && cached.text !== null && cached.text !== undefined) {
+          currentEntry = cached;
           if (screenshot.complete && screenshot.naturalHeight !== 0) renderOverlay();
           screenshot.onload = renderOverlay;
           updateExtractedText();
       } else {
-          // Fetch on-demand
+          // Not cached, or cached as a stub: fetch on-demand
           currentEntry = null;
           renderOverlay();
           document.getElementById('extractedText').innerHTML = '<span class="text-muted"><i class="bi bi-arrow-clockwise spinner-border spinner-border-sm"></i> Loading...</span>';
@@ -2558,20 +2552,29 @@ def api_search():
 
 @app.route("/api/sync")
 def api_sync():
-    """Lightweight sync: returns only new/updated timestamps, no entry data.
+    """Lightweight sync: returns only newly captured timestamps, bounded.
 
-    Entry data is fetched on-demand via /api/entry/<ts> when the user views a frame.
+    Timestamp-based (not updated_at-based) so an OCR backlog — which bumps
+    updated_at on many existing rows — never floods this poll. The payload is
+    capped at `limit` and drains oldest-first via the returned cursor. Stale
+    cached OCR text is refreshed lazily on view; entry data is fetched on-demand
+    via /api/entry/<ts>.
     """
     try:
         since = int(request.args.get("since", 0))
     except ValueError:
         since = 0
+    try:
+        limit = int(request.args.get("limit", 500))
+    except ValueError:
+        limit = 500
+    limit = max(1, min(limit, 2000))
 
-    new_timestamps, max_updated_at = get_timestamps_updated_since(since_updated_at=since)
+    new_timestamps, new_cursor = get_new_timestamps(since_timestamp=since, limit=limit)
 
     return jsonify({
         'timestamps': new_timestamps,
-        'sync_cursor': max_updated_at
+        'sync_cursor': new_cursor
     })
 
 

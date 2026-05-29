@@ -413,6 +413,37 @@ def get_timestamps_updated_since(since_updated_at: int = 0) -> tuple:
     return timestamps, max_updated
 
 
+def get_new_timestamps(since_timestamp: int = 0, limit: int = 500) -> tuple:
+    """Returns (timestamps, new_cursor) for newly captured entries.
+
+    Timestamp-based and bounded: only entries with ``timestamp > since_timestamp``
+    are returned, oldest first, capped at ``limit``. ``new_cursor`` is the largest
+    timestamp returned (or ``since_timestamp`` if none), so the next poll resumes
+    after the last drained capture without skipping any.
+
+    Unlike a ``updated_at``-based poll, this is immune to OCR backlogs: re-OCR'ing
+    old frames bumps their ``updated_at`` but not their ``timestamp``, so they
+    never flood this endpoint. Stale cached OCR text is refreshed lazily on view.
+    """
+    timestamps: List[int] = []
+    new_cursor: int = since_timestamp
+    try:
+        with _connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT timestamp FROM entries "
+                "WHERE timestamp > ? ORDER BY timestamp ASC LIMIT ?",
+                (since_timestamp, limit),
+            )
+            for row in cursor:
+                timestamps.append(row[0])
+            if timestamps:
+                new_cursor = timestamps[-1]  # ASC order -> last is the largest
+    except sqlite3.Error as e:
+        print(f"Database error while fetching new timestamps: {e}")
+    return timestamps, new_cursor
+
+
 def get_entries_light(limit: int = None, min_timestamp: int = 0) -> List[LightEntry]:
     """Retrieves entries without embedding blob (saves ~1.5KB per entry)."""
     entries: List[LightEntry] = []
