@@ -479,15 +479,24 @@ def timeline_v2():
       background: rgba(30,30,30,0.85); box-shadow: 0 8px 32px rgba(0,0,0,0.4);
     }
     .search-icon { position: absolute; right: 15px; top: 50%; transform: translateY(-50%); color: rgba(255,255,255,0.4); }
-    .search-spinner {
-      position: absolute; right: 15px; top: 50%; transform: translateY(-50%);
-      color: rgba(0,123,255,0.8); animation: spin-centered 1s linear infinite;
-      transform-origin: center;
+    /* Loading indicator: a light sweeping around the search bar border. */
+    @property --orl-angle { syntax: "<angle>"; initial-value: 0deg; inherits: false; }
+    .search-wrapper.searching::after {
+      content: "";
+      position: absolute; inset: -2px; border-radius: 26px;
+      padding: 2.5px;  /* ring thickness */
+      /* A comet of light — bright head, trailing tail — sweeping the border. */
+      background: conic-gradient(from var(--orl-angle),
+        rgba(13,110,253,0) 0deg, rgba(13,110,253,0) 50deg,
+        rgba(77,155,255,0.45) 140deg, #4d9bff 168deg, #eaf4ff 179deg,
+        rgba(13,110,253,0) 184deg, rgba(13,110,253,0) 360deg);
+      -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+      -webkit-mask-composite: xor; mask-composite: exclude;
+      filter: drop-shadow(0 0 4px rgba(77,155,255,0.8)) drop-shadow(0 0 9px rgba(13,110,253,0.55));
+      animation: orl-border-sweep 1.1s linear infinite;
+      pointer-events: none; z-index: 3;
     }
-    /* Dedicated name: a generic @keyframes spin is defined later for .spin-anim
-       and would otherwise override this one, dropping the translateY(-50%) and
-       making the spinner drift downward instead of rotating in place. */
-    @keyframes spin-centered { from { transform: translateY(-50%) rotate(0deg); } to { transform: translateY(-50%) rotate(360deg); } }
+    @keyframes orl-border-sweep { to { --orl-angle: 360deg; } }
     
     /* Search results */
     .search-results {
@@ -1126,10 +1135,9 @@ def timeline_v2():
     
     <!-- Search bar -->
     <div class="search-container">
-      <div class="search-wrapper">
+      <div class="search-wrapper" id="searchWrapper">
         <input type="text" class="search-input" id="searchInput" placeholder="Search your history...">
         <i class="bi bi-search search-icon" id="searchIcon"></i>
-        <i class="bi bi-arrow-clockwise search-spinner" id="searchSpinner" style="display: none;"></i>
         <i class="bi bi-x-circle-fill clear-icon" id="searchClear" style="display: none;"></i>
       </div>
     </div>
@@ -1966,7 +1974,7 @@ def timeline_v2():
     
     const searchIcon = document.getElementById('searchIcon');
     const searchClear = document.getElementById('searchClear');
-    const searchSpinner = document.getElementById('searchSpinner');
+    const searchWrapper = document.getElementById('searchWrapper');
 
     // Search
     searchInput.addEventListener('input', () => {
@@ -1983,10 +1991,13 @@ def timeline_v2():
       }
       
       if (!q) {
+        // Cancel any in-flight search and stop the border light immediately.
+        if (searchController) searchController.abort();
+        searchWrapper.classList.remove('searching');
         searchResults.classList.remove('show');
         return;
       }
-      
+
       searchTimeout = setTimeout(() => performSearch(q), 600);
     });
 
@@ -2000,11 +2011,9 @@ def timeline_v2():
       if (searchController) searchController.abort();
       searchController = new AbortController();
 
-      // Show loading spinner in place of the icons (hide the clear X too so it
-      // doesn't sit under the spinner at the same right-edge position).
-      searchIcon.style.display = 'none';
-      searchClear.style.display = 'none';
-      searchSpinner.style.display = 'block';
+      // Loading indicator: sweep a light around the search bar border. Leave the
+      // search/clear icons as the input handler set them — no overlap.
+      searchWrapper.classList.add('searching');
 
       try {
         const response = await fetch(`/api/search?q=${encodeURIComponent(q)}`, { signal: searchController.signal });
@@ -2027,18 +2036,13 @@ def timeline_v2():
         }
         searchResults.classList.add('show');
       } catch (err) {
-        // A newer search aborted this one — it owns the spinner now, leave the UI alone.
+        // A newer search aborted this one — it owns the indicator now, leave it.
         if (err.name === 'AbortError') return;
         console.error('Search error:', err);
       }
 
-      // Done (success or non-abort error): hide spinner, restore the right icon.
-      searchSpinner.style.display = 'none';
-      if (searchInput.value.length > 0) {
-        searchClear.style.display = 'block';
-      } else {
-        searchIcon.style.display = 'block';
-      }
+      // Done (success or non-abort error): stop the border light.
+      searchWrapper.classList.remove('searching');
     }
     
     function goToTimestamp(ts) {
