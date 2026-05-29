@@ -495,13 +495,14 @@ def get_entries_light(limit: int = None, min_timestamp: int = 0) -> List[LightEn
 # a narrow cone where even good multi-word queries top out around 0.4 — a high
 # absolute floor would silently nuke legitimate searches.
 DEFAULT_MIN_SIMILARITY = 0.15
-# Adaptive relevance: keep entries scoring within this margin of the best match
-# for the query. Because the cosine scale is query-dependent, an absolute cutoff
-# can't separate good from bad queries; a margin relative to the top score does.
+# Adaptive relevance: keep semantic-only matches within this margin of the best
+# match for the query. Because the cosine scale is query-dependent, an absolute
+# cutoff can't separate good from bad queries; a margin relative to the top does.
 DEFAULT_RELEVANCE_MARGIN = 0.12
-# Recency only nudges near-ties: bonus in [0, RECENCY_WEIGHT], decaying with age.
-RECENCY_WEIGHT = 0.1
-RECENCY_TAU_US = 7 * 24 * 60 * 60 * 1_000_000  # 7-day e-folding time, in microseconds
+# A screen captured repeatedly produces many near-identical consecutive frames.
+# Collapse a run of same-window captures (same app+title, each within this gap of
+# the previous) into a single representative so results show distinct moments.
+DEFAULT_DEDUPE_WINDOW_US = 120 * 1_000_000  # 2 minutes
 
 
 def _fetch_entries_by_ids(conn, ids: List[int]) -> dict:
@@ -532,28 +533,29 @@ def search_entries_streaming(
     offset: int = 0,
     min_similarity: float = DEFAULT_MIN_SIMILARITY,
     relevance_margin: float = DEFAULT_RELEVANCE_MARGIN,
+    dedupe_window_us: int = DEFAULT_DEDUPE_WINDOW_US,
     now_us: Optional[int] = None,
 ) -> dict:
-    """Search entries by semantic relevance, with an adaptive relevance floor.
+    """Search entries with a keyword-first, recency-ordered ranking.
 
-    Scans every row once, computing cosine similarity per row. A row becomes a
-    candidate if its similarity reaches ``min_similarity`` (a low absolute floor)
-    OR the query text matches its OCR text (keyword matches always qualify).
-    After the scan, an *adaptive* floor is applied: only candidates scoring within
-    ``relevance_margin`` of the best match for this query are kept. This adapts to
-    the query-dependent cosine scale of the embedding model, so weak queries yield
-    a smaller (or empty) set instead of being padded with unrelated entries, while
-    legitimate low-scoring queries are not nuked by a fixed cutoff.
+    This is a recall tool: users type words they remember seeing, so a literal
+    text match is the strongest, most intuitive signal. Results are therefore
+    grouped into two tiers, keyword matches always ranked above semantic-only
+    matches:
 
-    Ranking is dominated by the semantic score, refined by a keyword boost and a
-    small recency bonus:
+      Tier 1 — entries whose OCR text contains the query terms. Ordered by match
+        strength (full-phrase match > partial word match), then **most recent
+        first**. This gives the predictable "recent things containing X" order
+        users expect, instead of an order driven by invisible, near-tied cosine
+        scores.
+      Tier 2 — entries with no literal match but a strong semantic similarity.
+        Included only within ``relevance_margin`` of the best match for the query
+        (an adaptive floor, since the cosine scale is query-dependent), then
+        ordered by similarity and recency. Acts as a fallback when few/no entries
+        literally contain the query.
 
-        final_score = semantic_score + keyword_boost + recency_bonus
-        semantic_score in [-1, 1]; keyword_boost in [0, 0.5];
-        recency_bonus  = RECENCY_WEIGHT * exp(-age / RECENCY_TAU_US)  in [0, 0.1]
-
-    Supports offset/limit pagination over the full ranked, thresholded result set,
-    so older relevant entries remain reachable.
+    Supports offset/limit pagination over the full ranked set, so older relevant
+    entries remain reachable.
 
     Memory: only lightweight per-candidate tuples (no OCR text) are held during
     the scan; full rows for the requested page are re-fetched by id at the end.
@@ -564,14 +566,15 @@ def search_entries_streaming(
         limit: page size.
         offset: number of leading results to skip.
         min_similarity: absolute cosine floor for non-keyword candidates.
-        relevance_margin: keep candidates with semantic_score >= top_score - margin.
-        now_us: reference "now" in microseconds for recency decay (defaults to
-            wall-clock time; injectable for deterministic tests).
+        relevance_margin: keep semantic-only matches with score >= top - margin.
+        dedupe_window_us: consecutive same-window captures (same app+title) within
+            this gap collapse to one result; 0 disables deduplication.
+        now_us: accepted for backward compatibility; unused (recency is now a
+            strict timestamp tiebreak, not a decaying bonus).
 
     Returns:
-        dict with keys ``results`` (list of entry dicts, best first),
-        ``total`` (number of entries passing the adaptive filter), ``offset``,
-        ``limit`` and ``has_more``.
+        dict with keys ``results`` (list of entry dicts, best first), ``total``
+        (entries passing the filter), ``offset``, ``limit`` and ``has_more``.
     """
     empty = {"results": [], "total": 0, "offset": offset, "limit": limit, "has_more": False}
 
@@ -579,14 +582,11 @@ def search_entries_streaming(
     if query_norm == 0:
         return empty
 
-    if now_us is None:
-        import time
-        now_us = int(time.time() * 1_000_000)
-
     query_lower = query_text.lower() if query_text else ""
     query_words = query_lower.split() if query_lower else []
 
-    # Lightweight candidates: (final_score, timestamp, semantic_score, has_keyword, id).
+    # Lightweight candidates:
+    # (has_keyword, keyword_strength, semantic, timestamp, id, app, title).
     candidates: list = []
     top_semantic = float("-inf")
 
@@ -595,7 +595,7 @@ def search_entries_streaming(
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT id, text, timestamp, embedding FROM entries"
+                "SELECT id, app, title, text, timestamp, embedding FROM entries"
             )
 
             for row in cursor:
@@ -606,48 +606,71 @@ def search_entries_streaming(
 
                 semantic_score = float(np.dot(query_embedding, embedding) / (query_norm * emb_norm))
 
-                keyword_boost = 0.0
-                has_keyword = False
+                # keyword_strength: 1.0 for a full-phrase hit, else the fraction
+                # of query words present; 0.0 if the text matches nothing.
+                keyword_strength = 0.0
                 if query_lower:
                     text_lower = row["text"].lower() if row["text"] else ""
                     if query_lower in text_lower:
-                        keyword_boost = 0.5
-                        has_keyword = True
+                        keyword_strength = 1.0
                     elif query_words:
                         matched = sum(1 for w in query_words if w in text_lower)
                         if matched > 0:
-                            keyword_boost = 0.3 * (matched / len(query_words))
-                            has_keyword = True
+                            keyword_strength = matched / len(query_words)
+                has_keyword = keyword_strength > 0.0
 
                 # Absolute floor: drop the genuine bottom, unless the query text
                 # literally appears in the entry.
                 if semantic_score < min_similarity and not has_keyword:
                     continue
 
-                age_us = max(0, now_us - row["timestamp"])
-                recency_bonus = RECENCY_WEIGHT * np.exp(-age_us / RECENCY_TAU_US)
-                final_score = semantic_score + keyword_boost + float(recency_bonus)
-
                 if semantic_score > top_semantic:
                     top_semantic = semantic_score
-                candidates.append((final_score, row["timestamp"], semantic_score,
-                                   has_keyword, row["id"]))
+                candidates.append((has_keyword, keyword_strength, semantic_score,
+                                   row["timestamp"], row["id"],
+                                   row["app"] or "", row["title"] or ""))
 
             if not candidates:
                 return empty
 
-            # Adaptive floor relative to the best match for this query. Keyword
-            # matches are kept regardless so literal hits never disappear.
+            # Tier 2 (semantic-only) is gated by an adaptive floor relative to the
+            # best match. Tier 1 (keyword) bypasses it so literal hits never drop.
             cutoff = top_semantic - relevance_margin
-            kept = [c for c in candidates if c[2] >= cutoff or c[3]]
+            kept = [c for c in candidates if c[0] or c[2] >= cutoff]
 
-            # Best first: highest final_score, then newest.
-            kept.sort(key=lambda c: (c[0], c[1]), reverse=True)
+            # Keyword tier first; within keyword tier by match strength then
+            # newest; within semantic tier by similarity then newest.
+            kept.sort(key=lambda c: (
+                1 if c[0] else 0,
+                c[1] if c[0] else c[2],
+                c[3],
+            ), reverse=True)
+
+            # Collapse runs of the same window (same tier + app + title) whose
+            # captures are within dedupe_window_us of each other, keeping the
+            # first (highest-ranked / most recent) of each run.
+            if dedupe_window_us and dedupe_window_us > 0:
+                deduped = []
+                prev_sig = None
+                prev_ts = None
+                for c in kept:
+                    sig = (c[0], c[5], c[6])  # has_keyword, app, title
+                    if (prev_sig is not None and sig == prev_sig
+                            and abs(c[3] - prev_ts) <= dedupe_window_us):
+                        prev_ts = c[3]  # chain the run so long sessions collapse fully
+                        continue
+                    deduped.append(c)
+                    prev_sig = sig
+                    prev_ts = c[3]
+                kept = deduped
+
             total = len(kept)
 
             page_meta = kept[offset:offset + limit]
             page_ids = [c[4] for c in page_meta]
             rows_by_id = _fetch_entries_by_ids(conn, page_ids)
+            # Preserve ranked order (page_ids may repeat ids only if duplicated,
+            # which dedupe prevents); map back by id.
             page = [rows_by_id[i] for i in page_ids if i in rows_by_id]
 
     except sqlite3.Error as e:

@@ -133,12 +133,57 @@ class TestSearchRanking(unittest.TestCase):
         insert_entry("mid", NOW_US - 1, unit_x(0.35), "App", "T")
         insert_entry("low", NOW_US - 2, unit_x(0.20), "App", "T")
 
+        # dedup disabled: this test isolates the adaptive threshold, and the three
+        # synthetic rows share app/title so dedup would otherwise collapse them.
         res = search_entries_streaming(emb(1, 0, 0), query_text="",
                                        relevance_margin=0.12, min_similarity=0.15,
-                                       now_us=NOW_US)
+                                       dedupe_window_us=0, now_us=NOW_US)
         texts = {r["text"] for r in res["results"]}
         self.assertEqual(texts, {"top", "mid"})
         self.assertEqual(res["total"], 2)
+
+    def test_keyword_matches_rank_above_semantic_then_by_recency(self):
+        """Tier 1 (literal matches) ranks above Tier 2 (semantic-only), and within
+        the keyword tier the most recent wins — the recall-tool ordering."""
+        old_kw = NOW_US - 30 * DAY_US
+        recent_kw = NOW_US - 1 * DAY_US
+        # Two entries containing "invoice" with weak semantic similarity...
+        insert_entry("old invoice receipt", old_kw, emb(0, 1, 0), "App", "T")
+        insert_entry("recent invoice receipt", recent_kw, emb(0, 1, 0), "App", "T")
+        # ...and one with NO literal match but maximal semantic similarity.
+        insert_entry("unrelated screen", NOW_US, emb(1, 0, 0), "App", "T")
+
+        res = search_entries_streaming(emb(1, 0, 0), query_text="invoice", now_us=NOW_US)
+        texts = [r["text"] for r in res["results"]]
+        self.assertEqual(texts, [
+            "recent invoice receipt",  # keyword tier, most recent first
+            "old invoice receipt",     # keyword tier, older
+            "unrelated screen",        # semantic-only tier, ranked last despite cosine 1.0
+        ])
+
+    def test_dedupes_consecutive_same_window_captures(self):
+        """A run of same app+title captures close in time collapses to one result;
+        a different window, and the same window after a long gap, are kept."""
+        SEC = 1_000_000
+        # A continuous run of the same window (app A / title X), ~10s apart.
+        insert_entry("report alpha", NOW_US, emb(0, 1, 0), "A", "X")
+        insert_entry("report alpha", NOW_US - 10 * SEC, emb(0, 1, 0), "A", "X")
+        insert_entry("report alpha", NOW_US - 20 * SEC, emb(0, 1, 0), "A", "X")
+        # A different window in between (kept).
+        insert_entry("report beta", NOW_US - 25 * SEC, emb(0, 1, 0), "B", "Y")
+        # Same window as the run, but an hour earlier (separate session, kept).
+        insert_entry("report alpha", NOW_US - 3600 * SEC, emb(0, 1, 0), "A", "X")
+
+        res = search_entries_streaming(emb(1, 0, 0), query_text="report",
+                                       dedupe_window_us=120 * SEC, now_us=NOW_US)
+        ts = [r["timestamp"] for r in res["results"]]
+        self.assertEqual(ts, [NOW_US, NOW_US - 25 * SEC, NOW_US - 3600 * SEC])
+        self.assertEqual(res["total"], 3)
+
+        # With dedup disabled, all five rows come back.
+        res2 = search_entries_streaming(emb(1, 0, 0), query_text="report",
+                                        dedupe_window_us=0, now_us=NOW_US)
+        self.assertEqual(res2["total"], 5)
 
     def test_zero_query_norm_returns_empty(self):
         insert_entry("x", NOW_US, emb(1, 0, 0), "App", "T")
