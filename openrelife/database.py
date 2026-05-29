@@ -1,4 +1,5 @@
 import heapq
+import re
 import sqlite3
 from collections import namedtuple
 import numpy as np
@@ -543,9 +544,10 @@ def search_entries_streaming(
     grouped into two tiers, keyword matches always ranked above semantic-only
     matches:
 
-      Tier 1 — entries whose OCR text contains the query terms. Ordered by match
-        strength (full-phrase match > partial word match), then **most recent
-        first**. This gives the predictable "recent things containing X" order
+      Tier 1 — entries whose OCR text contains the query terms (whole-word match,
+        not substring: "cani" matches the word "cani", not "meccanici"). Ordered
+        by match strength (full-phrase match > partial word match), then **most
+        recent first**. This gives the predictable "recent things containing X" order
         users expect, instead of an order driven by invisible, near-tied cosine
         scores.
       Tier 2 — entries with no literal match but a strong semantic similarity.
@@ -583,7 +585,13 @@ def search_entries_streaming(
         return empty
 
     query_lower = query_text.lower() if query_text else ""
-    query_words = query_lower.split() if query_lower else []
+    # Whole-word matching: ignore 1-char tokens (e.g. Italian "e"/"a"), and match
+    # on word boundaries so "cani" matches the word "cani" but NOT "meccanici".
+    query_words = [w for w in query_lower.split() if len(w) >= 2]
+    word_res = [(w, re.compile(r"\b" + re.escape(w) + r"\b")) for w in query_words]
+    # Full-phrase match is also whole-word bounded (a single-word query would
+    # otherwise fall back to a substring match here and re-introduce the bug).
+    phrase_re = re.compile(r"\b" + re.escape(query_lower) + r"\b") if query_lower else None
 
     # Lightweight candidates:
     # (has_keyword, keyword_strength, semantic, timestamp, id, app, title).
@@ -611,12 +619,15 @@ def search_entries_streaming(
                 keyword_strength = 0.0
                 if query_lower:
                     text_lower = row["text"].lower() if row["text"] else ""
-                    if query_lower in text_lower:
+                    if query_lower in text_lower and phrase_re.search(text_lower):
                         keyword_strength = 1.0
-                    elif query_words:
-                        matched = sum(1 for w in query_words if w in text_lower)
+                    elif word_res:
+                        # Cheap substring pre-check short-circuits the regex on the
+                        # vast majority of rows that don't contain the token at all.
+                        matched = sum(1 for w, rx in word_res
+                                      if w in text_lower and rx.search(text_lower))
                         if matched > 0:
-                            keyword_strength = matched / len(query_words)
+                            keyword_strength = matched / len(word_res)
                 has_keyword = keyword_strength > 0.0
 
                 # Absolute floor: drop the genuine bottom, unless the query text

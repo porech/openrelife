@@ -161,6 +161,17 @@ class TestSearchRanking(unittest.TestCase):
             "unrelated screen",        # semantic-only tier, ranked last despite cosine 1.0
         ])
 
+    def test_keyword_matching_is_whole_word(self):
+        """A query word matches only whole words, not substrings: "cani" must not
+        match "meccanici" (so it falls below threshold and drops out)."""
+        insert_entry("officina meccanici aperto", NOW_US, emb(0, 1, 0), "A", "X")
+        insert_entry("i miei cani dormono", NOW_US - 60_000_000, emb(0, 1, 0), "B", "Y")
+
+        res = search_entries_streaming(emb(1, 0, 0), query_text="cani", now_us=NOW_US)
+        texts = [r["text"] for r in res["results"]]
+        self.assertEqual(texts, ["i miei cani dormono"])
+        self.assertEqual(res["total"], 1)
+
     def test_dedupes_consecutive_same_window_captures(self):
         """A run of same app+title captures close in time collapses to one result;
         a different window, and the same window after a long gap, are kept."""
