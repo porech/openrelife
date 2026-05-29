@@ -481,9 +481,13 @@ def timeline_v2():
     .search-icon { position: absolute; right: 15px; top: 50%; transform: translateY(-50%); color: rgba(255,255,255,0.4); }
     .search-spinner {
       position: absolute; right: 15px; top: 50%; transform: translateY(-50%);
-      color: rgba(0,123,255,0.8); animation: spin 1s linear infinite;
+      color: rgba(0,123,255,0.8); animation: spin-centered 1s linear infinite;
+      transform-origin: center;
     }
-    @keyframes spin { from { transform: translateY(-50%) rotate(0deg); } to { transform: translateY(-50%) rotate(360deg); } }
+    /* Dedicated name: a generic @keyframes spin is defined later for .spin-anim
+       and would otherwise override this one, dropping the translateY(-50%) and
+       making the spinner drift downward instead of rotating in place. */
+    @keyframes spin-centered { from { transform: translateY(-50%) rotate(0deg); } to { transform: translateY(-50%) rotate(360deg); } }
     
     /* Search results */
     .search-results {
@@ -1996,8 +2000,10 @@ def timeline_v2():
       if (searchController) searchController.abort();
       searchController = new AbortController();
 
-      // Show loading spinner
+      // Show loading spinner in place of the icons (hide the clear X too so it
+      // doesn't sit under the spinner at the same right-edge position).
       searchIcon.style.display = 'none';
+      searchClear.style.display = 'none';
       searchSpinner.style.display = 'block';
 
       try {
@@ -2021,11 +2027,17 @@ def timeline_v2():
         }
         searchResults.classList.add('show');
       } catch (err) {
+        // A newer search aborted this one — it owns the spinner now, leave the UI alone.
         if (err.name === 'AbortError') return;
         console.error('Search error:', err);
-      } finally {
-        // Hide loading spinner
-        searchSpinner.style.display = 'none';
+      }
+
+      // Done (success or non-abort error): hide spinner, restore the right icon.
+      searchSpinner.style.display = 'none';
+      if (searchInput.value.length > 0) {
+        searchClear.style.display = 'block';
+      } else {
+        searchIcon.style.display = 'block';
       }
     }
     
