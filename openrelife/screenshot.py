@@ -18,6 +18,7 @@ from openrelife.utils import (
     get_active_window_title,
     is_user_active,
     is_browser_incognito,
+    is_own_window_visible,
 )
 
 # File logger for capture/OCR diagnostics
@@ -242,8 +243,12 @@ def record_screenshots_thread():
                 time.sleep(1)
                 continue
 
+            # Skip self-screenshots: not only when OpenReLife is focused, but
+            # whenever its window is visible on ANY monitor — otherwise, with
+            # multiple displays, OpenReLife on a non-focused screen gets captured
+            # (polluting search results with screenshots of the app itself).
             active_title = get_active_window_title()
-            if active_title and "OpenReLife" in active_title:
+            if (active_title and "OpenReLife" in active_title) or is_own_window_visible():
                 time.sleep(1)
                 continue
 

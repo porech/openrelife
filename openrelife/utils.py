@@ -398,6 +398,46 @@ def get_active_window_title() -> str:
         raise NotImplementedError(f"Platform '{sys.platform}' not supported yet for get_active_window_title")
 
 
+def is_own_window_visible_osx(app_substring: str = "OpenReLife",
+                              min_w: int = 300, min_h: int = 200) -> bool:
+    """True if our own app has a substantial window currently on screen (on any
+    display), so the capture loop can skip self-screenshots even when our window
+    is visible on a non-focused monitor (a focus-only check misses that).
+
+    Tray/menubar items live on higher window layers and are excluded by the
+    layer==0 + minimum-size filter. Returns False on any error (fail open: keep
+    capturing rather than silently stopping).
+    """
+    if CGWindowListCopyWindowInfo is None or kCGNullWindowID is None or kCGWindowListOptionOnScreenOnly is None:
+        return False
+    try:
+        windows = CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly, kCGNullWindowID)
+        for w in windows:
+            owner = w.get("kCGWindowOwnerName", "") or ""
+            if app_substring not in owner:
+                continue
+            if w.get("kCGWindowLayer", 0) != 0:  # skip tray/menubar/panels
+                continue
+            bounds = w.get("kCGWindowBounds", {}) or {}
+            if bounds.get("Width", 0) >= min_w and bounds.get("Height", 0) >= min_h:
+                return True
+        return False
+    except Exception as e:
+        print(f"Error checking own window visibility: {e}")
+        return False
+
+
+def is_own_window_visible() -> bool:
+    """Cross-platform: is our app's window currently visible on screen?
+
+    Implemented on macOS (the only fully supported platform); elsewhere returns
+    False so callers fall back to their focused-window title check.
+    """
+    if sys.platform == "darwin":
+        return is_own_window_visible_osx()
+    return False
+
+
 def is_user_active_osx() -> bool:
     """Checks if the user is active on macOS based on HID idle time.
 
