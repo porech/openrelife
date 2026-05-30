@@ -533,7 +533,9 @@ def timeline_v2():
     .result-card img.loaded { opacity: 1; }
     .result-time { padding: 8px 12px 2px; font-size: 11px; color: rgba(255,255,255,0.6); text-align: center; }
     .result-snippet {
-      padding: 0 12px 10px; font-size: 11px; line-height: 1.35; color: rgba(255,255,255,0.55);
+      /* bottom spacing as MARGIN, not padding: overflow:hidden clips at the
+         padding box, so a padding-bottom would let the clamped 3rd line peek. */
+      padding: 0 12px; margin-bottom: 10px; font-size: 11px; line-height: 1.35; color: rgba(255,255,255,0.55);
       display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word;
     }
     mark.search-mark { background: rgba(13,110,253,0.4); color: #eaf4ff; border-radius: 3px; padding: 0 1px; }
