@@ -398,86 +398,18 @@ def get_active_window_title() -> str:
         raise NotImplementedError(f"Platform '{sys.platform}' not supported yet for get_active_window_title")
 
 
-def _monitor_indices_with_frontmost_own_window(display_rects, windows_front_to_back,
-                                               app_substring="OpenReLife",
-                                               min_w=300, min_h=200):
-    """Pure decision: which monitors currently SHOW our app as the frontmost window.
+def is_self_capture(active_app: str, active_title: str) -> bool:
+    """True if the focused window is OpenReLife itself, so the capture loop skips it.
 
-    Args:
-        display_rects: list of (x, y, w, h) per display, in the SAME order as the
-            capture's monitor list (display -D 1 == index 0).
-        windows_front_to_back: on-screen windows, frontmost first, each a dict with
-            keys owner, layer, x, y, w, h.
-    Returns:
-        set of 0-based monitor indices where our app is the frontmost substantial
-        (layer-0, >= min size) window covering the display's center. Occlusion-aware
-        (a window in front of ours on a display means ours isn't shown there), so a
-        hidden/behind window of ours never suppresses capture.
+    Keys primarily on the APP NAME, which NSWorkspace reports reliably. The window
+    TITLE is unreliable for the Electron window — the macOS window server often
+    returns it empty (stored as "Unknown Title"), which let self-screenshots slip
+    past a title-only guard. The title check is kept as a secondary signal.
+
+    Uses an exact app-name match so an unrelated window merely titled "openrelife —
+    …" (e.g. a workspace/tmux pane) is NOT mistaken for the app and still recorded.
     """
-    result = set()
-    for k, (ox, oy, ww, hh) in enumerate(display_rects):
-        cx, cy = ox + ww / 2, oy + hh / 2
-        for w in windows_front_to_back:
-            if w.get("layer", 0) != 0:
-                continue
-            if w.get("w", 0) < min_w or w.get("h", 0) < min_h:
-                continue
-            wx, wy, wW, wH = w.get("x", 0), w.get("y", 0), w.get("w", 0), w.get("h", 0)
-            if wx <= cx < wx + wW and wy <= cy < wy + wH:
-                # frontmost substantial window over this display's center
-                if app_substring in (w.get("owner") or ""):
-                    result.add(k)
-                break
-    return result
-
-
-def own_window_monitor_indices_osx(num_monitors, app_substring="OpenReLife",
-                                   min_w=300, min_h=200):
-    """0-based monitor indices (matching `screencapture -D` order) where OpenReLife
-    is the frontmost window, so the capture loop can skip ONLY those monitors and
-    keep capturing the rest. Returns an empty set on any uncertainty (fail open).
-
-    The mapping assumes `screencapture -D N` corresponds to CGGetActiveDisplayList
-    order (N == index+1); guarded by requiring the display count to match
-    num_monitors so a layout mismatch never mis-skips a monitor.
-    """
-    if CGWindowListCopyWindowInfo is None or kCGNullWindowID is None or kCGWindowListOptionOnScreenOnly is None:
-        return set()
-    try:
-        import Quartz
-        err, displays, count = Quartz.CGGetActiveDisplayList(16, None, None)
-        if err != 0 or not count or count != num_monitors:
-            return set()  # uncertain mapping -> skip nothing
-        display_rects = []
-        for d in displays[:count]:
-            b = Quartz.CGDisplayBounds(d)
-            display_rects.append((b.origin.x, b.origin.y, b.size.width, b.size.height))
-        raw = CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly, kCGNullWindowID)
-        windows = []
-        for w in raw:
-            b = w.get("kCGWindowBounds", {}) or {}
-            windows.append({
-                "owner": w.get("kCGWindowOwnerName", "") or "",
-                "layer": w.get("kCGWindowLayer", 0),
-                "x": b.get("X", 0), "y": b.get("Y", 0),
-                "w": b.get("Width", 0), "h": b.get("Height", 0),
-            })
-        return _monitor_indices_with_frontmost_own_window(
-            display_rects, windows, app_substring, min_w, min_h)
-    except Exception as e:
-        print(f"Error mapping own window to monitors: {e}")
-        return set()
-
-
-def own_window_monitor_indices(num_monitors):
-    """Cross-platform: 0-based monitor indices currently showing our app frontmost.
-
-    Implemented on macOS (the only fully supported platform); elsewhere returns an
-    empty set so the capture loop skips nothing.
-    """
-    if sys.platform == "darwin":
-        return own_window_monitor_indices_osx(num_monitors)
-    return set()
+    return (active_app or "") == "OpenReLife" or "OpenReLife" in (active_title or "")
 
 
 def is_user_active_osx() -> bool:

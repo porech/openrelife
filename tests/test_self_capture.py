@@ -1,57 +1,40 @@
-"""Tests for the self-capture guard. OpenReLife must not screenshot its own
-window, but it must keep capturing OTHER monitors while its window is open.
-We test the pure decision function (which monitor shows our app frontmost) with
-synthetic display/window layouts so it runs on any platform."""
+"""Tests for the self-capture guard. OpenReLife must never screenshot itself.
+
+The original guard checked only the window TITLE, but the macOS window server
+often returns an empty title for the Electron window (stored as "Unknown Title"),
+which let OpenReLife self-capture whenever the title came back blank. The fix
+keys on the focused APP NAME, which is reported reliably.
+"""
 import os
 import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from openrelife.utils import _monitor_indices_with_frontmost_own_window as decide
+from openrelife.utils import is_self_capture
 
 
-def win(owner, x, y, w, h, layer=0):
-    return {"owner": owner, "layer": layer, "x": x, "y": y, "w": w, "h": h}
+def test_skips_when_app_name_is_openrelife_even_with_empty_title():
+    # The regression: title unavailable -> "Unknown Title", but app name is reliable.
+    assert is_self_capture("OpenReLife", "Unknown Title") is True
+    assert is_self_capture("OpenReLife", "") is True
+    assert is_self_capture("OpenReLife", None) is True
 
 
-# Two side-by-side 1000x800 displays: -D1 at x=0, -D2 at x=1000.
-TWO_DISPLAYS = [(0, 0, 1000, 800), (1000, 0, 1000, 800)]
+def test_skips_when_title_contains_openrelife():
+    assert is_self_capture("", "OpenReLife") is True
 
 
-def test_skips_only_the_monitor_showing_our_app():
-    # OpenReLife frontmost on display 2 (x=1000), real work on display 1.
-    windows = [
-        win("OpenReLife", 1000, 0, 1000, 800),  # frontmost over display 2 center
-        win("Code", 0, 0, 1000, 800),           # display 1
-    ]
-    assert decide(TWO_DISPLAYS, windows) == {1}
+def test_does_not_skip_other_apps():
+    assert is_self_capture("Comet", "Browser Harness") is False
+    assert is_self_capture("iTerm2", "xela92@MPB") is False
 
 
-def test_captures_all_when_our_app_not_on_screen():
-    windows = [win("Code", 0, 0, 1000, 800), win("Safari", 1000, 0, 1000, 800)]
-    assert decide(TWO_DISPLAYS, windows) == set()
+def test_does_not_skip_workspace_named_openrelife():
+    # A Muxy/tmux workspace titled "openrelife — Search" is the user's WORK, not the
+    # app — exact app-name match + case-sensitive title keep it recorded.
+    assert is_self_capture("Muxy", "openrelife — Search") is False
+    assert is_self_capture("Muxy", "openrelife — Multi-Monitor") is False
 
 
-def test_occluded_own_window_is_not_skipped():
-    # OpenReLife is BEHIND a fullscreen Code window on display 1 — front-to-back
-    # order puts Code first, so display 1 shows Code, not us: do NOT skip it.
-    windows = [
-        win("Code", 0, 0, 1000, 800),         # frontmost on display 1 (covers our window)
-        win("OpenReLife", 0, 0, 1000, 800),   # behind
-    ]
-    assert decide(TWO_DISPLAYS, windows) == set()
-
-
-def test_ignores_tray_and_tiny_windows():
-    windows = [
-        win("OpenReLife", 1000, 0, 1000, 800, layer=25),  # tray/menubar layer
-        win("OpenReLife", 1000, 0, 40, 40),               # tiny popover
-        win("Notes", 1000, 0, 1000, 800),                 # actual frontmost layer-0
-    ]
-    assert decide(TWO_DISPLAYS, windows) == set()
-
-
-def test_single_display_frontmost_own_window():
-    one = [(0, 0, 1440, 900)]
-    assert decide(one, [win("OpenReLife", 0, 0, 1440, 900)]) == {0}
-    assert decide(one, [win("Telegram", 0, 0, 1440, 900)]) == set()
+def test_handles_none_inputs():
+    assert is_self_capture(None, None) is False
