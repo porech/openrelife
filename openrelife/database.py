@@ -752,22 +752,19 @@ def fts_keyword_strengths(query_text):
 
 
 def _fts_has_matches(conn) -> bool:
-    """True if the FTS index actually returns hits — guards against a
-    populated-but-empty index (a bare 'rebuild' was observed to produce 153k rows
-    that matched nothing). Probes a real token from a sample row."""
+    """True if the FTS index covers the content — guards against a populated-but-empty
+    index. Probes by ROWID PRESENCE (tokenizer-independent): a token-MATCH probe would
+    be unreliable here because the tokenizer keeps '_' as a word char (so a regex-
+    extracted probe word like 'invoice' need not be a real token of 'invoice_total')."""
     row = conn.execute(
-        "SELECT text FROM entries WHERE text IS NOT NULL AND length(text) > 5 LIMIT 1"
+        "SELECT id FROM entries WHERE text IS NOT NULL AND text != '' ORDER BY id DESC LIMIT 1"
     ).fetchone()
     if not row:
         return True  # nothing to index yet
-    toks = re.findall(r"[A-Za-z]{3,}", row[0] or "")
-    if not toks:
-        return True
     try:
-        hit = conn.execute(
-            "SELECT 1 FROM entries_fts WHERE entries_fts MATCH ? LIMIT 1", (toks[0],)
-        ).fetchone()
-        return hit is not None
+        return conn.execute(
+            "SELECT 1 FROM entries_fts WHERE rowid = ? LIMIT 1", (row[0],)
+        ).fetchone() is not None
     except sqlite3.Error:
         return False
 
@@ -825,6 +822,39 @@ def get_updated_rows_with_embeddings_since(since_updated_at=0):
     except sqlite3.Error as e:
         print(f"Database error fetching updated rows for index: {e}")
     return rows, max_updated
+
+
+def get_text_row_ids(limit):
+    """Set of the newest `limit` entry ids that have OCR text (the rows the index
+    should hold). Used by the poller's periodic reconcile to detect both silent
+    deletes and OCR-fills missed by the watermark window."""
+    try:
+        with _connect() as conn:
+            return {r[0] for r in conn.execute(
+                "SELECT id FROM entries WHERE text IS NOT NULL AND text != '' "
+                "ORDER BY id DESC LIMIT ?", (limit,))}
+    except sqlite3.Error as e:
+        print(f"Database error fetching text-row ids: {e}")
+        return set()
+
+
+def get_rows_with_embeddings_by_ids(ids):
+    """(timestamp, id, app, title, embedding) for the given ids — for reconcile adds."""
+    out = []
+    if not ids:
+        return out
+    try:
+        with _connect() as conn:
+            for i in range(0, len(ids), 900):  # stay under SQLite's parameter cap
+                chunk = ids[i:i + 900]
+                ph = ",".join("?" * len(chunk))
+                out.extend(conn.execute(
+                    f"SELECT timestamp, id, app, title, embedding FROM entries WHERE id IN ({ph})",
+                    chunk,
+                ).fetchall())
+    except sqlite3.Error as e:
+        print(f"Database error fetching rows by id for index: {e}")
+    return out
 
 
 def _ranked_ids_for_query_dbscan(query_embedding, query_text, min_similarity,

@@ -63,8 +63,10 @@ class TestEmbeddingIndex(unittest.TestCase):
         EI._current = None
         EI._matrix_ready.clear(); EI._fts_ready.clear()
         EI._del_pending.clear()
+        EI._loader_alive = False
 
     def _warm_index(self):
+        EI._loader_alive = True   # so notify_delete records (loader normally sets this)
         EI._initial_load()
         EI._matrix_ready.set()
         self.assertTrue(fts_backfill_if_needed())
@@ -122,6 +124,33 @@ class TestEmbeddingIndex(unittest.TestCase):
         EI._poll_once()
         ids_after, _ = _ranked_ids_for_query(QUERY, "report", 0.15, 0.12, 0)
         self.assertNotIn(rid, ids_after)
+
+    def test_until_zero_is_treated_as_no_filter(self):
+        # since/until == 0 means "no filter" (DB-scan uses truthy guards); the index
+        # must match, not apply `ts <= 0` and return empty.
+        self._seed()
+        self._warm_index()
+        ids0, t0 = _ranked_ids_for_query(QUERY, "report", 0.15, 0.12, 0, since=0, until=0)
+        idsN, tN = _ranked_ids_for_query(QUERY, "report", 0.15, 0.12, 0, since=None, until=None)
+        self.assertEqual((ids0, t0), (idsN, tN))
+        self.assertGreater(t0, 0)
+
+    def test_reconcile_recovers_watermark_missed_fill(self):
+        self._seed()
+        self._warm_index()
+        # Push the watermark high so the trailing window starts well above the low
+        # updated_at we force below — simulating an OCR-fill missed by clock skew.
+        EI._publish(EI._replace_meta(EI._current, hi_updated=10_000_000))
+        insert_entry("late report row", 12345, emb(0.93), "AppG", "T7")
+        conn = sqlite3.connect(mock_db_path)
+        conn.execute("UPDATE entries SET updated_at=1 WHERE timestamp=12345"); conn.commit(); conn.close()
+        rid = _id_of(12345)
+        EI._poll_once(reconcile=False)  # watermark poll misses it
+        self.assertIsNone(EI._current.id_to_row.get(rid))
+        EI._poll_once(reconcile=True)   # reconcile recovers it
+        self.assertIsNotNone(EI._current.id_to_row.get(rid))
+        ids, _ = _ranked_ids_for_query(QUERY, "report", 0.15, 0.12, 0)
+        self.assertIn(rid, ids)
 
     def test_fts_keyword_parity_with_regex(self):
         self._seed()

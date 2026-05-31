@@ -51,7 +51,6 @@ class _Snapshot:
     id_to_row: dict              # id -> row index (live region only)
     ts_to_row: dict              # timestamp -> row index
     hi_updated: int              # updated_at high-watermark covered by this snapshot
-    count_seen: int              # COUNT(*) of entries at last sync (delete backstop)
 
 
 _current: _Snapshot | None = None
@@ -60,6 +59,7 @@ _fts_ready = threading.Event()
 _writer_lock = threading.Lock()  # guards _del_pending and writer bookkeeping only
 _del_pending: set = set()
 _started = False
+_loader_alive = False            # False once the loader thread gives up (init failure)
 _max_rows = DEFAULT_MAX_RESIDENT_ROWS
 
 
@@ -74,7 +74,10 @@ def current() -> _Snapshot | None:
 
 def notify_delete(timestamps):
     """Record timestamps deleted from the DB so the poller drops them from the matrix
-    (deletes don't bump updated_at, so the watermark can't see them)."""
+    (deletes don't bump updated_at, so the watermark can't see them). No-op if the
+    loader isn't running (otherwise the set would grow unbounded with no drainer)."""
+    if not _loader_alive:
+        return
     with _writer_lock:
         _del_pending.update(int(t) for t in timestamps)
 
@@ -114,9 +117,12 @@ def query(query_embedding, query_text, min_similarity, relevance_margin,
     ts = snap.ts[:n]
 
     valid = np.ones(n, dtype=bool)
-    if since is not None:
+    # Truthy guards to match the DB-scan reference exactly (it uses `if since:` /
+    # `if until:`, so 0 means "no filter" — a `not None` guard would wrongly apply
+    # `ts <= 0` and return nothing).
+    if since:
         valid &= ts >= since
-    if until is not None:
+    if until:
         valid &= ts <= until
     if app:
         valid &= (snap.apps[:n] == app)
@@ -174,11 +180,14 @@ def _parse_embedding(blob):
 
 
 def _loader():
+    global _loader_alive
+    _loader_alive = True
     try:
         _initial_load()
         _matrix_ready.set()
     except Exception as e:
         print(f"Embedding index: initial load failed, staying on DB-scan fallback: {e}")
+        _loader_alive = False
         return
     try:
         from openrelife.database import fts_backfill_if_needed
@@ -206,7 +215,6 @@ def _initial_load():
             "SELECT COUNT(*) FROM entries WHERE text IS NOT NULL AND text != ''"
         ).fetchone()[0]
         hi = conn.execute("SELECT COALESCE(MAX(updated_at), 0) FROM entries").fetchone()[0]
-        count_seen = conn.execute("SELECT COUNT(*) FROM entries").fetchone()[0]
         cap = max(16, int(math.ceil(min(total, _max_rows) * HEADROOM)))
         mat = np.zeros((cap, EMB_DIM), dtype=np.float32)
         ids = np.zeros(cap, dtype=np.int64)
@@ -231,7 +239,7 @@ def _initial_load():
             id_to_row[int(row["id"])] = k
             ts_to_row[int(row["timestamp"])] = k
             k += 1
-    snap = _Snapshot(mat, ids, ts, apps, titles, k, id_to_row, ts_to_row, int(hi), int(count_seen))
+    snap = _Snapshot(mat, ids, ts, apps, titles, k, id_to_row, ts_to_row, int(hi))
     _publish(snap)
     print(f"Embedding index loaded: {k} rows in {time.time()-t0:.1f}s (cap {cap})")
 
@@ -242,7 +250,8 @@ def _publish(snap: _Snapshot):
 
 
 def _poll_once(reconcile=False):
-    from openrelife.database import get_updated_rows_with_embeddings_since, _connect
+    from openrelife.database import (get_updated_rows_with_embeddings_since,
+                                     get_text_row_ids, get_rows_with_embeddings_by_ids)
     snap = _current
     if snap is None:
         return
@@ -252,38 +261,56 @@ def _poll_once(reconcile=False):
     since = max(0, snap.hi_updated - TRAILING_US)
     rows, new_hi = get_updated_rows_with_embeddings_since(since)
 
-    appends, overwrites = [], []
-    for (timestamp, rid, app, title, blob) in rows:
-        vec = _parse_embedding(blob)
-        if vec is None:
-            continue  # stub / zero embedding — no matrix row yet
-        rid = int(rid); timestamp = int(timestamp)
-        if rid in snap.id_to_row:
-            overwrites.append((rid, timestamp, app or "", title or "", vec))
-        else:
-            appends.append((rid, timestamp, app or "", title or "", vec))
-
     with _writer_lock:
         deletes = set(_del_pending)
         _del_pending.clear()
 
-    new_count = None
-    if reconcile or deletes:
-        with _connect() as conn:
-            new_count = conn.execute("SELECT COUNT(*) FROM entries").fetchone()[0]
+    appends, overwrites = [], []
+    for (timestamp, rid, app, title, blob) in rows:
+        rid = int(rid); timestamp = int(timestamp)
+        if timestamp in deletes:
+            continue  # deleted in this same window — never resurrect it
+        vec = _parse_embedding(blob)
+        if vec is None:
+            continue  # stub / zero embedding — no matrix row yet
+        (overwrites if rid in snap.id_to_row else appends).append(
+            (rid, timestamp, app or "", title or "", vec))
 
-    if not appends and not overwrites and not deletes and not reconcile:
+    # ids to remove: explicit deletes (mapped via timestamp) ...
+    drop_ids = set()
+    for ts_del in deletes:
+        r = snap.ts_to_row.get(ts_del)
+        if r is not None and r < snap.n_rows:
+            drop_ids.add(int(snap.ids[r]))
+
+    # ... plus, on a reconcile tick, a full two-sided pass against the DB: drop rows
+    # no longer present (silent deletes / rolled off) and ADD any text rows missing
+    # from the matrix (e.g. an OCR-fill the watermark window skipped under clock skew).
+    if reconcile:
+        desired = get_text_row_ids(_max_rows)
+        matrix_ids = set(snap.id_to_row)
+        drop_ids |= (matrix_ids - desired)
+        append_ids = {a[0] for a in appends}
+        missing = desired - matrix_ids - append_ids
+        if missing:
+            for (timestamp, rid, app, title, blob) in get_rows_with_embeddings_by_ids(list(missing)):
+                if int(timestamp) in deletes:
+                    continue
+                vec = _parse_embedding(blob)
+                if vec is not None:
+                    appends.append((int(rid), int(timestamp), app or "", title or "", vec))
+
+    if not appends and not overwrites and not drop_ids:
         if new_hi > snap.hi_updated:  # advance watermark even on a quiet tick
             _publish(_replace_meta(snap, hi_updated=int(new_hi)))
         return
 
     # Fast path: append-only into reserved headroom → zero-copy publish.
-    if appends and not overwrites and not deletes and (snap.n_rows + len(appends)) <= snap.mat.shape[0]:
+    if appends and not overwrites and not drop_ids and (snap.n_rows + len(appends)) <= snap.mat.shape[0]:
         _apply_appends_in_place(snap, appends, new_hi)
         return
 
-    # General path: build a fresh snapshot (copy) applying appends+overwrites+deletes.
-    _rebuild_with_changes(snap, appends, overwrites, deletes, new_hi, new_count, reconcile)
+    _rebuild_with_changes(snap, appends, overwrites, drop_ids, new_hi)
 
 
 def _replace_meta(snap, **kw):
@@ -308,42 +335,26 @@ def _apply_appends_in_place(snap, appends, new_hi):
         id_to_row[rid] = k; ts_to_row[timestamp] = k
         k += 1
     new_snap = _Snapshot(snap.mat, snap.ids, snap.ts, snap.apps, snap.titles, k,
-                         id_to_row, ts_to_row, int(max(new_hi, snap.hi_updated)), snap.count_seen)
+                         id_to_row, ts_to_row, int(max(new_hi, snap.hi_updated)))
     _publish(new_snap)
 
 
-def _rebuild_with_changes(snap, appends, overwrites, deletes, new_hi, new_count, reconcile):
+def _rebuild_with_changes(snap, appends, overwrites, drop_ids, new_hi):
     n = snap.n_rows
-    # Determine which existing rows survive.
-    drop_rows = set()
-    for ts_del in deletes:
-        r = snap.ts_to_row.get(ts_del)
-        if r is not None and r < n:
-            drop_rows.add(r)
+    keep_idx = [r for r in range(n) if int(snap.ids[r]) not in drop_ids]
 
-    live_ids = None
-    if reconcile:
-        from openrelife.database import _connect
-        with _connect() as conn:
-            live_ids = {row[0] for row in conn.execute("SELECT id FROM entries")}
+    # If a single poll somehow brings more new rows than the whole window, keep the
+    # newest by id (defensive — avoids a negative/zero rolloff slice).
+    new_rows = appends
+    if len(new_rows) > _max_rows:
+        new_rows = sorted(new_rows, key=lambda x: x[0])[-_max_rows:]
 
-    keep_idx = []
-    for r in range(n):
-        if r in drop_rows:
-            continue
-        if live_ids is not None and int(snap.ids[r]) not in live_ids:
-            continue  # reconcile: dropped from DB without a notify
-        keep_idx.append(r)
+    # Row-window cap: keep the newest survivors (largest id) within the remaining budget.
+    budget = max(0, _max_rows - len(new_rows))
+    if len(keep_idx) > budget:
+        keep_idx = sorted(keep_idx, key=lambda r: int(snap.ids[r]))[-budget:] if budget else []
 
-    new_rows = appends  # genuinely new
     cap_needed = len(keep_idx) + len(new_rows)
-    # apply MAX_RESIDENT_ROWS window (drop oldest = smallest id) if over cap
-    survivors = keep_idx
-    if cap_needed > _max_rows:
-        # keep newest by id
-        survivors = sorted(keep_idx, key=lambda r: int(snap.ids[r]))[-(_max_rows - len(new_rows)):]
-        cap_needed = len(survivors) + len(new_rows)
-
     cap = max(16, int(math.ceil(cap_needed * HEADROOM)))
     mat = np.zeros((cap, EMB_DIM), dtype=np.float32)
     ids = np.zeros(cap, dtype=np.int64)
@@ -354,7 +365,7 @@ def _rebuild_with_changes(snap, appends, overwrites, deletes, new_hi, new_count,
     ow_by_id = {rid: (timestamp, app, title, vec) for (rid, timestamp, app, title, vec) in overwrites}
 
     k = 0
-    for r in survivors:
+    for r in keep_idx:
         rid = int(snap.ids[r])
         if rid in ow_by_id:
             timestamp, app, title, vec = ow_by_id.pop(rid)
@@ -375,6 +386,5 @@ def _rebuild_with_changes(snap, appends, overwrites, deletes, new_hi, new_count,
         mat[k] = vec; ids[k] = rid; ts[k] = timestamp; apps[k] = app; titles[k] = title
         id_to_row[rid] = k; ts_to_row[timestamp] = k; k += 1
 
-    count_seen = int(new_count) if new_count is not None else snap.count_seen
     _publish(_Snapshot(mat, ids, ts, apps, titles, k, id_to_row, ts_to_row,
-                       int(max(new_hi, snap.hi_updated)), count_seen))
+                       int(max(new_hi, snap.hi_updated))))
