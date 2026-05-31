@@ -4188,6 +4188,12 @@ if __name__ == "__main__":
     print(f"Appdata folder: {appdata_folder}")
     print(f"🚀 Starting OpenReLife on port {configured_port} (Production Mode)...")
 
+    # Warm the in-memory embedding index in the background (issue #11): the first
+    # ~12s load happens off the request path; until it's ready, search falls back to
+    # the DB scan, so serve() is never blocked and behaviour is never worse.
+    from openrelife import embedding_index
+    embedding_index.start()
+
     # Start capture thread (fast, every 3s)
     t = Thread(target=record_screenshots_thread, daemon=True)
     t.start()

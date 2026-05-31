@@ -87,6 +87,54 @@ def create_db() -> None:
                 "CREATE INDEX IF NOT EXISTS idx_updated_at ON entries (updated_at)"
             )
 
+            # Full-text index for the keyword tier (issue #11). External-content FTS5
+            # over entries.text: lives in the same WAL DB, so the triggers fire for
+            # ANY writer (incl. the OCR subprocess's plain UPDATE) with no extra code,
+            # and it persists across restarts. The one-time backfill of pre-existing
+            # rows is done lazily in the background (fts_backfill_if_needed), not here,
+            # so startup is never blocked. Triggers are SPLIT and guarded with
+            # `WHEN ... IS NOT NULL`: an external-content 'delete' on a NULL text (which
+            # every stub->OCR fill would otherwise trigger) corrupts the FTS index.
+            # Tokenizer chosen to MATCH the \\b whole-word regex of the DB-scan path
+            # exactly: keep '_' as a word char (so "invoice" does NOT match
+            # "invoice_total", as \\b doesn't) and preserve diacritics. Verified to
+            # give symdiff=0 vs the regex on real data. If an older entries_fts exists
+            # with a different tokenizer, drop+recreate it (external-content → cheap to
+            # rebuild via the background backfill).
+            _fts_tokenize = "unicode61 remove_diacritics 0 tokenchars '_'"
+            existing = cursor.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='entries_fts'"
+            ).fetchone()
+            if existing and "tokenchars '_'" not in (existing[0] or ""):
+                for _trig in ("entries_fts_ai", "entries_fts_au_del",
+                              "entries_fts_au_ins", "entries_fts_ad"):
+                    cursor.execute(f"DROP TRIGGER IF EXISTS {_trig}")
+                cursor.execute("DROP TABLE IF EXISTS entries_fts")
+            cursor.execute(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5("
+                f"text, content='entries', content_rowid='id', tokenize=\"{_fts_tokenize}\")"
+            )
+            cursor.execute(
+                "CREATE TRIGGER IF NOT EXISTS entries_fts_ai AFTER INSERT ON entries "
+                "WHEN new.text IS NOT NULL BEGIN "
+                "INSERT INTO entries_fts(rowid, text) VALUES (new.id, new.text); END"
+            )
+            cursor.execute(
+                "CREATE TRIGGER IF NOT EXISTS entries_fts_au_del AFTER UPDATE OF text ON entries "
+                "WHEN old.text IS NOT NULL BEGIN "
+                "INSERT INTO entries_fts(entries_fts, rowid, text) VALUES ('delete', old.id, old.text); END"
+            )
+            cursor.execute(
+                "CREATE TRIGGER IF NOT EXISTS entries_fts_au_ins AFTER UPDATE OF text ON entries "
+                "WHEN new.text IS NOT NULL BEGIN "
+                "INSERT INTO entries_fts(rowid, text) VALUES (new.id, new.text); END"
+            )
+            cursor.execute(
+                "CREATE TRIGGER IF NOT EXISTS entries_fts_ad AFTER DELETE ON entries "
+                "WHEN old.text IS NOT NULL BEGIN "
+                "INSERT INTO entries_fts(entries_fts, rowid, text) VALUES ('delete', old.id, old.text); END"
+            )
+
             # Fix: entries created before async OCR (pre April 9 2025) that have
             # text=NULL were incorrectly migrated. They were already processed by the
             # old sync OCR — mark them as processed-empty so they don't clog the queue.
@@ -317,6 +365,13 @@ def delete_entries(timestamps: List[int]) -> int:
         # total) until the freshness token catches the COUNT change. Deletes are
         # rare, explicit user actions — clear the cache outright to stay correct.
         _invalidate_rank_cache()
+        # Also tell the in-memory embedding index to drop these rows (deletes don't
+        # bump updated_at, so the poller can't see them via the watermark).
+        try:
+            from openrelife import embedding_index
+            embedding_index.notify_delete(timestamps)
+        except Exception:
+            pass
     return deleted_count
 
 
@@ -595,27 +650,193 @@ def _fetch_entries_by_ids(conn, ids: List[int]) -> dict:
     return out
 
 
-def _ranked_ids_for_query(query_embedding, query_text, min_similarity,
-                          relevance_margin, dedupe_window_us,
-                          since=None, until=None, app=None):
-    """The ~18s hot path: full scan + keyword-first/semantic ranking + dedupe.
+def _query_matchers(query_text):
+    """Precompiled whole-word matchers for the keyword tier (shared by the DB-scan
+    path and the in-memory-index path so keyword semantics stay identical)."""
+    query_lower = query_text.lower() if query_text else ""
+    query_words = [w for w in query_lower.split() if len(w) >= 2]
+    word_res = [(w, re.compile(r"\b" + re.escape(w) + r"\b")) for w in query_words]
+    phrase_re = re.compile(r"\b" + re.escape(query_lower) + r"\b") if query_lower else None
+    return query_lower, query_words, word_res, phrase_re
 
-    Returns (ranked_ids, total) — the COMPLETE ranked id list (not a page). Paging
-    and caching are handled by search_entries_streaming. Optional since/until/app
-    narrow the scan via a WHERE clause (also used for Phase-2 filters).
+
+def _keyword_strength(text, query_lower, word_res, phrase_re):
+    """1.0 for a whole-word full-phrase hit, else fraction of query words present,
+    else 0.0. Identical logic for both search paths."""
+    if not query_lower:
+        return 0.0
+    tl = text.lower() if text else ""
+    if query_lower in tl and phrase_re.search(tl):
+        return 1.0
+    if word_res:
+        matched = sum(1 for w, rx in word_res if w in tl and rx.search(tl))
+        if matched > 0:
+            return matched / len(word_res)
+    return 0.0
+
+
+def _rank_candidates(candidates, relevance_margin, dedupe_window_us):
+    """Shared ranking: adaptive relevance floor + keyword-first/recency sort +
+    run-dedupe. ``candidates`` = list of
+    (has_keyword, keyword_strength, semantic, timestamp, id, app, title).
+    Returns (ranked_ids, total). Identical for the DB-scan and in-memory paths."""
+    if not candidates:
+        return [], 0
+    top_semantic = max(c[2] for c in candidates)
+    cutoff = top_semantic - relevance_margin
+    kept = [c for c in candidates if c[0] or c[2] >= cutoff]
+    # Keyword tier first; within keyword tier by match strength then newest;
+    # within semantic tier by similarity then newest.
+    kept.sort(key=lambda c: (1 if c[0] else 0, c[1] if c[0] else c[2], c[3]), reverse=True)
+    if dedupe_window_us and dedupe_window_us > 0:
+        deduped = []
+        prev_sig = None
+        prev_ts = None
+        for c in kept:
+            sig = (c[0], c[5], c[6])  # has_keyword, app, title
+            if (prev_sig is not None and sig == prev_sig
+                    and abs(c[3] - prev_ts) <= dedupe_window_us):
+                prev_ts = c[3]
+                continue
+            deduped.append(c)
+            prev_sig = sig
+            prev_ts = c[3]
+        kept = deduped
+    return [c[4] for c in kept], len(kept)
+
+
+def _fts_quote(s):
+    return '"' + s.replace('"', '""') + '"'
+
+
+def fts_keyword_strengths(query_text):
+    """Keyword tier via FTS5, computing strength from rowid SETS only (no text fetch).
+
+    For each query word, one MATCH gives the set of docs containing that whole-word
+    token; one phrase MATCH gives the full-phrase docs. Strength = 1.0 for a phrase
+    hit, else (#words present)/(#query words) — mirroring the DB-scan regex. Returns
+    {id: strength>0}. unicode61 tokenization gives whole-word semantics matching the
+    \\b-regex on normal text (only diacritic/underscore folding differs, within the
+    documented tolerance).
     """
+    query_lower, query_words, _word_res, _phrase_re = _query_matchers(query_text)
+    if not query_lower:
+        return {}
+    words = query_words if query_words else [query_lower]
+    try:
+        with _connect() as conn:
+            word_sets = []
+            for w in words:
+                ids = {r[0] for r in conn.execute(
+                    "SELECT rowid FROM entries_fts WHERE entries_fts MATCH ?", (_fts_quote(w),))}
+                word_sets.append(ids)
+            if len(words) >= 2:
+                phrase_ids = {r[0] for r in conn.execute(
+                    "SELECT rowid FROM entries_fts WHERE entries_fts MATCH ?", (_fts_quote(query_lower),))}
+            else:
+                phrase_ids = word_sets[0]
+    except sqlite3.Error as e:
+        print(f"FTS keyword query failed: {e}")
+        return {}
+    out = {}
+    all_ids = set().union(*word_sets) if word_sets else set()
+    nwords = len(words)
+    for rid in all_ids:
+        if rid in phrase_ids:
+            out[rid] = 1.0
+        else:
+            cnt = sum(1 for s in word_sets if rid in s)
+            if cnt > 0:
+                out[rid] = cnt / nwords
+    return out
+
+
+def _fts_has_matches(conn) -> bool:
+    """True if the FTS index actually returns hits — guards against a
+    populated-but-empty index (a bare 'rebuild' was observed to produce 153k rows
+    that matched nothing). Probes a real token from a sample row."""
+    row = conn.execute(
+        "SELECT text FROM entries WHERE text IS NOT NULL AND length(text) > 5 LIMIT 1"
+    ).fetchone()
+    if not row:
+        return True  # nothing to index yet
+    toks = re.findall(r"[A-Za-z]{3,}", row[0] or "")
+    if not toks:
+        return True
+    try:
+        hit = conn.execute(
+            "SELECT 1 FROM entries_fts WHERE entries_fts MATCH ? LIMIT 1", (toks[0],)
+        ).fetchone()
+        return hit is not None
+    except sqlite3.Error:
+        return False
+
+
+def fts_backfill_if_needed():
+    """One-time backfill of the FTS index for rows that existed before it was added.
+    Idempotent and self-verifying: backfills when the index is materially behind OR
+    populated-but-empty. Uses an explicit INSERT...SELECT (deterministic, unlike the
+    bulk 'rebuild' which was observed to silently produce a non-matching index under
+    concurrent writes). Safe to call from the background loader. Returns True when
+    the index is usable."""
+    try:
+        with _connect() as conn:
+            have = conn.execute("SELECT COUNT(*) FROM entries_fts").fetchone()[0]
+            want = conn.execute(
+                "SELECT COUNT(*) FROM entries WHERE text IS NOT NULL AND text != ''"
+            ).fetchone()[0]
+            if want == 0:
+                return True
+            if have >= want * 0.95 and _fts_has_matches(conn):
+                return True  # already populated and matching
+            print(f"Building FTS keyword index ({want} text rows)...")
+            conn.execute("INSERT INTO entries_fts(entries_fts) VALUES('delete-all')")
+            conn.execute(
+                "INSERT INTO entries_fts(rowid, text) "
+                "SELECT id, text FROM entries WHERE text IS NOT NULL AND text != ''"
+            )
+            conn.commit()
+            ok = _fts_has_matches(conn)
+            print(f"FTS keyword index built (matching={ok}).")
+            return ok
+    except sqlite3.Error as e:
+        print(f"FTS backfill failed: {e}")
+        return False
+
+
+def get_updated_rows_with_embeddings_since(since_updated_at=0):
+    """For the in-memory index poller: rows whose updated_at > since, with their
+    embedding. Mirrors get_timestamps_updated_since but returns the data the matrix
+    needs. Returns (rows, max_updated) where each row is
+    (timestamp, id, app, title, embedding_blob)."""
+    rows = []
+    max_updated = since_updated_at
+    try:
+        with _connect() as conn:
+            cursor = conn.execute(
+                "SELECT timestamp, id, app, title, embedding, updated_at FROM entries "
+                "INDEXED BY idx_updated_at WHERE updated_at > ? ORDER BY updated_at ASC",
+                (since_updated_at,),
+            )
+            for row in cursor:
+                rows.append((row[0], row[1], row[2], row[3], row[4]))
+                if row[5] > max_updated:
+                    max_updated = row[5]
+    except sqlite3.Error as e:
+        print(f"Database error fetching updated rows for index: {e}")
+    return rows, max_updated
+
+
+def _ranked_ids_for_query_dbscan(query_embedding, query_text, min_similarity,
+                                 relevance_margin, dedupe_window_us,
+                                 since=None, until=None, app=None):
+    """Reference implementation: full DB scan + per-row cosine + keyword. Kept as the
+    cold-start fallback (used until the in-memory index is warm) AND as the
+    regression oracle for the in-memory path."""
     query_norm = np.linalg.norm(query_embedding)
     if query_norm == 0:
         return [], 0
-
-    query_lower = query_text.lower() if query_text else ""
-    # Whole-word matching: ignore 1-char tokens (e.g. Italian "e"/"a"), and match
-    # on word boundaries so "cani" matches the word "cani" but NOT "meccanici".
-    query_words = [w for w in query_lower.split() if len(w) >= 2]
-    word_res = [(w, re.compile(r"\b" + re.escape(w) + r"\b")) for w in query_words]
-    # Full-phrase match is also whole-word bounded (a single-word query would
-    # otherwise fall back to a substring match here and re-introduce the bug).
-    phrase_re = re.compile(r"\b" + re.escape(query_lower) + r"\b") if query_lower else None
+    query_lower, query_words, word_res, phrase_re = _query_matchers(query_text)
 
     where, params = [], []
     if since:
@@ -628,85 +849,49 @@ def _ranked_ids_for_query(query_embedding, query_text, min_similarity,
     if where:
         sql += " WHERE " + " AND ".join(where)
 
-    # Lightweight candidates: (has_keyword, keyword_strength, semantic, timestamp,
-    # id, app, title). app/title are kept (not hashed) so the run-dedupe below
-    # compares the exact window signature — a hash could false-collapse two
-    # distinct adjacent windows on a collision.
-    candidates: list = []
-    top_semantic = float("-inf")
-
+    candidates = []
     try:
         with _connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(sql, params)
-
             for row in cursor:
                 embedding = np.frombuffer(row["embedding"], dtype=np.float32)
                 emb_norm = np.linalg.norm(embedding)
                 if emb_norm == 0:
                     continue
-
                 semantic_score = float(np.dot(query_embedding, embedding) / (query_norm * emb_norm))
-
-                keyword_strength = 0.0
-                if query_lower:
-                    text_lower = row["text"].lower() if row["text"] else ""
-                    if query_lower in text_lower and phrase_re.search(text_lower):
-                        keyword_strength = 1.0
-                    elif word_res:
-                        matched = sum(1 for w, rx in word_res
-                                      if w in text_lower and rx.search(text_lower))
-                        if matched > 0:
-                            keyword_strength = matched / len(word_res)
+                keyword_strength = _keyword_strength(row["text"], query_lower, word_res, phrase_re)
                 has_keyword = keyword_strength > 0.0
-
                 if semantic_score < min_similarity and not has_keyword:
                     continue
-
-                if semantic_score > top_semantic:
-                    top_semantic = semantic_score
                 candidates.append((has_keyword, keyword_strength, semantic_score,
                                    row["timestamp"], row["id"],
                                    row["app"] or "", row["title"] or ""))
-
-            if not candidates:
-                return [], 0
-
-            # Tier 2 (semantic-only) gated by an adaptive floor relative to the
-            # best match; Tier 1 (keyword) bypasses it so literal hits never drop.
-            cutoff = top_semantic - relevance_margin
-            kept = [c for c in candidates if c[0] or c[2] >= cutoff]
-
-            # Keyword tier first; within keyword tier by match strength then
-            # newest; within semantic tier by similarity then newest.
-            kept.sort(key=lambda c: (
-                1 if c[0] else 0,
-                c[1] if c[0] else c[2],
-                c[3],
-            ), reverse=True)
-
-            # Collapse runs of the same window (same sig within dedupe_window_us).
-            if dedupe_window_us and dedupe_window_us > 0:
-                deduped = []
-                prev_sig = None
-                prev_ts = None
-                for c in kept:
-                    sig = (c[0], c[5], c[6])  # has_keyword, app, title
-                    if (prev_sig is not None and sig == prev_sig
-                            and abs(c[3] - prev_ts) <= dedupe_window_us):
-                        prev_ts = c[3]  # chain the run so long sessions collapse fully
-                        continue
-                    deduped.append(c)
-                    prev_sig = sig
-                    prev_ts = c[3]
-                kept = deduped
-
-            return [c[4] for c in kept], len(kept)
-
     except sqlite3.Error as e:
         print(f"Database error during streaming search: {e}")
         return [], 0
+    return _rank_candidates(candidates, relevance_margin, dedupe_window_us)
+
+
+def _ranked_ids_for_query(query_embedding, query_text, min_similarity,
+                          relevance_margin, dedupe_window_us,
+                          since=None, until=None, app=None):
+    """Dispatcher: use the in-memory embedding index when it is warm (sub-second),
+    otherwise fall back verbatim to the DB scan (so behaviour is never worse than
+    before the index was added)."""
+    try:
+        from openrelife import embedding_index
+        if embedding_index.ready():
+            keyword_strengths = fts_keyword_strengths(query_text)
+            return embedding_index.query(
+                query_embedding, query_text, min_similarity, relevance_margin,
+                dedupe_window_us, since, until, app, keyword_strengths)
+    except Exception as e:
+        print(f"In-memory index query failed, falling back to DB scan: {e}")
+    return _ranked_ids_for_query_dbscan(
+        query_embedding, query_text, min_similarity, relevance_margin,
+        dedupe_window_us, since, until, app)
 
 
 def search_entries_streaming(
