@@ -1,49 +1,57 @@
-"""Tests for the self-capture guard: OpenReLife must not screenshot its own window
-(even when visible on a non-focused monitor). is_own_window_visible_osx inspects
-the on-screen window list; here we mock Quartz so it runs on any platform."""
+"""Tests for the self-capture guard. OpenReLife must not screenshot its own
+window, but it must keep capturing OTHER monitors while its window is open.
+We test the pure decision function (which monitor shows our app frontmost) with
+synthetic display/window layouts so it runs on any platform."""
 import os
 import sys
-from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import openrelife.utils as U
+from openrelife.utils import _monitor_indices_with_frontmost_own_window as decide
 
 
-def _patch_windows(wins):
-    # Force the three Quartz symbols non-None and CGWindowListCopyWindowInfo -> wins.
-    return patch.multiple(
-        U,
-        CGWindowListCopyWindowInfo=lambda *a, **k: wins,
-        kCGNullWindowID=0,
-        kCGWindowListOptionOnScreenOnly=1,
-    )
+def win(owner, x, y, w, h, layer=0):
+    return {"owner": owner, "layer": layer, "x": x, "y": y, "w": w, "h": h}
 
 
-def test_true_when_large_own_window_on_screen():
-    wins = [
-        {"kCGWindowOwnerName": "Code", "kCGWindowLayer": 0, "kCGWindowBounds": {"Width": 1200, "Height": 800}},
-        {"kCGWindowOwnerName": "OpenReLife", "kCGWindowLayer": 0, "kCGWindowBounds": {"Width": 900, "Height": 700}},
+# Two side-by-side 1000x800 displays: -D1 at x=0, -D2 at x=1000.
+TWO_DISPLAYS = [(0, 0, 1000, 800), (1000, 0, 1000, 800)]
+
+
+def test_skips_only_the_monitor_showing_our_app():
+    # OpenReLife frontmost on display 2 (x=1000), real work on display 1.
+    windows = [
+        win("OpenReLife", 1000, 0, 1000, 800),  # frontmost over display 2 center
+        win("Code", 0, 0, 1000, 800),           # display 1
     ]
-    with _patch_windows(wins):
-        assert U.is_own_window_visible_osx() is True
+    assert decide(TWO_DISPLAYS, windows) == {1}
 
 
-def test_false_when_no_own_window():
-    wins = [{"kCGWindowOwnerName": "Safari", "kCGWindowLayer": 0, "kCGWindowBounds": {"Width": 1200, "Height": 800}}]
-    with _patch_windows(wins):
-        assert U.is_own_window_visible_osx() is False
+def test_captures_all_when_our_app_not_on_screen():
+    windows = [win("Code", 0, 0, 1000, 800), win("Safari", 1000, 0, 1000, 800)]
+    assert decide(TWO_DISPLAYS, windows) == set()
 
 
-def test_ignores_tray_layer_and_tiny_windows():
-    wins = [
-        {"kCGWindowOwnerName": "OpenReLife", "kCGWindowLayer": 25, "kCGWindowBounds": {"Width": 900, "Height": 700}},  # tray/menubar layer
-        {"kCGWindowOwnerName": "OpenReLife", "kCGWindowLayer": 0, "kCGWindowBounds": {"Width": 48, "Height": 48}},     # tiny popover
+def test_occluded_own_window_is_not_skipped():
+    # OpenReLife is BEHIND a fullscreen Code window on display 1 — front-to-back
+    # order puts Code first, so display 1 shows Code, not us: do NOT skip it.
+    windows = [
+        win("Code", 0, 0, 1000, 800),         # frontmost on display 1 (covers our window)
+        win("OpenReLife", 0, 0, 1000, 800),   # behind
     ]
-    with _patch_windows(wins):
-        assert U.is_own_window_visible_osx() is False
+    assert decide(TWO_DISPLAYS, windows) == set()
 
 
-def test_false_when_quartz_unavailable():
-    with patch.object(U, 'CGWindowListCopyWindowInfo', None):
-        assert U.is_own_window_visible_osx() is False
+def test_ignores_tray_and_tiny_windows():
+    windows = [
+        win("OpenReLife", 1000, 0, 1000, 800, layer=25),  # tray/menubar layer
+        win("OpenReLife", 1000, 0, 40, 40),               # tiny popover
+        win("Notes", 1000, 0, 1000, 800),                 # actual frontmost layer-0
+    ]
+    assert decide(TWO_DISPLAYS, windows) == set()
+
+
+def test_single_display_frontmost_own_window():
+    one = [(0, 0, 1440, 900)]
+    assert decide(one, [win("OpenReLife", 0, 0, 1440, 900)]) == {0}
+    assert decide(one, [win("Telegram", 0, 0, 1440, 900)]) == set()

@@ -18,7 +18,7 @@ from openrelife.utils import (
     get_active_window_title,
     is_user_active,
     is_browser_incognito,
-    is_own_window_visible,
+    own_window_monitor_indices,
 )
 
 # File logger for capture/OCR diagnostics
@@ -243,12 +243,12 @@ def record_screenshots_thread():
                 time.sleep(1)
                 continue
 
-            # Skip self-screenshots: not only when OpenReLife is focused, but
-            # whenever its window is visible on ANY monitor — otherwise, with
-            # multiple displays, OpenReLife on a non-focused screen gets captured
-            # (polluting search results with screenshots of the app itself).
+            # Skip the whole cycle while OpenReLife is the focused window (you're
+            # actively using it). The case of OpenReLife merely VISIBLE on a
+            # non-focused monitor is handled per-monitor below — we skip only that
+            # monitor and keep capturing the rest, instead of pausing everything.
             active_title = get_active_window_title()
-            if (active_title and "OpenReLife" in active_title) or is_own_window_visible():
+            if active_title and "OpenReLife" in active_title:
                 time.sleep(1)
                 continue
 
@@ -270,8 +270,19 @@ def record_screenshots_thread():
                 _logger.info(f"Reinitializing thumbnails ({len(screenshots)} monitors)")
                 last_thumbs = [_downscale_for_comparison(s) for s in screenshots]
 
+            # Monitors currently showing OpenReLife as the frontmost window — skip
+            # only those (other monitors keep being captured). Empty unless our
+            # window is actually on a screen, so it never pauses normal recording.
+            own_monitors = own_window_monitor_indices(len(screenshots))
+
             for i, screenshot in enumerate(screenshots):
                 thumb = _downscale_for_comparison(screenshot)
+
+                if i in own_monitors:
+                    # Keep the baseline fresh so the next real frame on this monitor
+                    # (once OpenReLife moves/closes) still registers as changed.
+                    last_thumbs[i] = thumb
+                    continue
 
                 if not is_similar(thumb, last_thumbs[i]):
                     last_thumbs[i] = thumb
