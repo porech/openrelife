@@ -332,12 +332,12 @@ def get_ocr_cooldown() -> int:
     return ocr_cooldown
 
 
-# OCR compute mode: aggressive, smart (default), on_charge_only
+# OCR compute mode: aggressive, smart (default), on_charge_only, eco, disabled
 ocr_compute_mode = "smart"
 
 def set_ocr_compute_mode(mode: str):
     global ocr_compute_mode
-    if mode in ("aggressive", "smart", "on_charge_only"):
+    if mode in ("aggressive", "smart", "on_charge_only", "eco", "disabled"):
         ocr_compute_mode = mode
 
 def get_ocr_compute_mode() -> str:
@@ -454,8 +454,23 @@ def _get_batch_params(pending_count: int) -> tuple:
 
     mode = ocr_compute_mode
 
+    if mode == "disabled":
+        return (0, 0, 1.0)
+
     if mode == "aggressive":
         return (20, 4, 0.3)
+
+    if mode == "eco":
+        # Power-saving: skip on battery; on AC use single thread + tiny batches
+        # with a long cooldown so background OCR is barely noticeable.
+        if on_battery:
+            return (0, 0, 1.0)
+        if not user_active:
+            return (5, 1, 1.0)
+        if battery_full:
+            return (3, 1, 2.0)
+        # AC + active + still charging: defer until charging completes
+        return (0, 0, 1.0)
 
     if mode == "on_charge_only":
         if on_battery:
@@ -530,7 +545,8 @@ def ocr_worker_thread():
         _logger.info(f"OCR batch: {len(pending)} pending, max_batch={max_batch}, threads={threads}, cooldown_mult={cooldown_mult}, mode={ocr_compute_mode}")
 
         if max_batch == 0:
-            # on_charge_only + battery: put everything back, wait
+            # No work this cycle (disabled mode, on_charge_only/eco on battery, or
+            # eco while still charging): put everything back and wait for the next tick.
             for ts in pending:
                 try:
                     _ocr_queue.put_nowait(ts)

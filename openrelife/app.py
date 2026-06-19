@@ -1370,11 +1370,15 @@ def timeline_v2():
             <option value="aggressive">Aggressive — large batches, short cooldown, always runs</option>
             <option value="smart" selected>Smart — adapts to battery/charging/idle state</option>
             <option value="on_charge_only">On Charge Only — no OCR on battery, recovers when plugged in</option>
+            <option value="eco">Eco — power-saving: single thread, tiny batches, only when fully charged or idle</option>
+            <option value="disabled">Disabled — never run OCR (screenshots still captured, text not searchable)</option>
           </select>
           <small class="form-text text-muted" style="margin-top: 8px;">
             <strong>Aggressive:</strong> fastest text availability, highest CPU usage.<br>
             <strong>Smart:</strong> small batches on battery, medium on charge, full recovery when idle+charging.<br>
-            <strong>On Charge Only:</strong> zero CPU impact on battery, processes backlog when plugged in.
+            <strong>On Charge Only:</strong> zero CPU impact on battery, processes backlog when plugged in.<br>
+            <strong>Eco:</strong> minimum power draw — skips on battery, runs slowly when on AC and idle or fully charged.<br>
+            <strong>Disabled:</strong> OCR is paused entirely; screenshots are saved but their text is not extracted until you switch to another mode.
           </small>
         </div>
 
