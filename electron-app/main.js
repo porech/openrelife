@@ -329,7 +329,7 @@ function updateTrayMenu() {
         dialog.showMessageBox({
           type: 'info',
           title: 'About OpenReLife',
-          message: 'OpenReLife v1.0.0',
+          message: `OpenReLife v${app.getVersion()}`,
           detail: 'Screen Memory (powered by AI) - made with ❤️ by Porech - https://github.com/porech/openrelife',
           buttons: ['OK'],
           icon: path.join(__dirname, 'app-icon.png')
