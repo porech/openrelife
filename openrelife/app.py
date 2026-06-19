@@ -894,7 +894,7 @@ def timeline_v2():
       display: block; margin-bottom: 8px; font-size: 13px;
       color: rgba(255,255,255,0.7); font-weight: 500;
     }
-    .form-group select, .form-group input {
+    .form-group select, .form-group input:not([type="checkbox"]):not([type="radio"]) {
       width: 100%; padding: 12px 16px; border-radius: 8px;
       border: 1px solid rgba(255,255,255,0.2); background: rgba(255,255,255,0.05);
       color: #fff; font-size: 14px; transition: all 0.2s;
