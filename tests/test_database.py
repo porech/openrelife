@@ -34,7 +34,10 @@ class TestDatabase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         """Set up a temporary database file for all tests in this class."""
-        # The database path is already patched by the module-level patch
+        # Point the shared module global at OUR temp DB before creating the schema.
+        # Sibling test modules also reassign openrelife.database.db_path; without this,
+        # create_db() could target another test's DB and leave ours table-less.
+        openrelife.database.db_path = mock_db_path
         cls.db_path = mock_db_path
         # Ensure the database and table are created once
         create_db()
@@ -55,6 +58,9 @@ class TestDatabase(unittest.TestCase):
 
     def setUp(self):
         """Connect to the database and clear entries before each test."""
+        # Re-assert our DB path on the shared global (sibling test modules may have
+        # clobbered it) so the imported helpers operate on this test's database.
+        openrelife.database.db_path = mock_db_path
         self.conn = sqlite3.connect(self.db_path)
         cursor = self.conn.cursor()
         cursor.execute("DELETE FROM entries")
