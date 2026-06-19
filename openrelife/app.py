@@ -737,22 +737,38 @@ def timeline_v2():
     .settings-modal-overlay.show { opacity: 1; pointer-events: auto; }
     
     .settings-modal {
-      background: #1e1e1e; width: 500px; max-width: 90%;
+      background: #1e1e1e; width: 880px; max-width: 92vw;
+      max-height: 90vh; overflow: hidden;
       border-radius: 12px; border: 1px solid rgba(255, 255, 255, 0.1);
       box-shadow: 0 20px 60px rgba(0,0,0,0.5); transform: translateY(20px);
       transition: transform 0.3s ease; display: flex; flex-direction: column;
     }
     .settings-modal-overlay.show .settings-modal { transform: translateY(0); }
-    
+
     .settings-modal-header {
+      flex: 0 0 auto;
       padding: 20px; border-bottom: 1px solid rgba(255, 255, 255, 0.1);
       display: flex; justify-content: space-between; align-items: center;
     }
     .settings-modal-header h2 { font-size: 20px; font-weight: 600; margin: 0; }
-    
-    .settings-modal-body { padding: 20px; }
-    
+
+    .settings-modal-body {
+      flex: 1 1 auto; min-height: 0; overflow-y: auto;
+      padding: 20px;
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+      gap: 20px 24px; align-content: start;
+    }
+    .settings-modal-body .form-group { margin: 0; }
+    .settings-modal-body::-webkit-scrollbar { width: 10px; }
+    .settings-modal-body::-webkit-scrollbar-thumb {
+      background: rgba(255,255,255,0.15); border-radius: 8px;
+    }
+    .settings-modal-body::-webkit-scrollbar-thumb:hover {
+      background: rgba(255,255,255,0.25);
+    }
+
     .settings-modal-footer {
+      flex: 0 0 auto;
       padding: 20px; border-top: 1px solid rgba(255, 255, 255, 0.1);
       display: flex; justify-content: flex-end; gap: 10px;
     }
@@ -1289,7 +1305,7 @@ def timeline_v2():
           </small>
         </div>
         
-        <div class="form-group" style="margin-top: 24px;">
+        <div class="form-group">
           <label>
             Screenshot Interval (seconds)
             <div class="tooltip-container">
@@ -1304,7 +1320,7 @@ def timeline_v2():
           </div>
         </div>
 
-        <div class="form-group" style="margin-top: 24px;">
+        <div class="form-group">
           <label>Screenshot Quality</label>
           <select id="qualitySelect" class="form-control" style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: #fff; height: auto; padding: 0.375rem 0.75rem;">
             <option value="low">Low (80% scale, 80% quality)</option>
@@ -1316,7 +1332,7 @@ def timeline_v2():
           </small>
         </div>
 
-        <div class="form-group" style="margin-top: 24px;">
+        <div class="form-group">
           <label>
             OCR Processing Interval (seconds)
             <div class="tooltip-container">
@@ -1330,7 +1346,7 @@ def timeline_v2():
           </small>
         </div>
 
-        <div id="ocrEngineSection" style="display: none; margin-top: 16px;">
+        <div id="ocrEngineSection" class="form-group" style="display: none;">
           <label style="display:block; font-weight:600; margin-bottom:6px;">OCR Engine</label>
           <label style="display:flex; align-items:center; gap:8px;">
             <input type="checkbox" id="useAppleVisionCheckbox">
@@ -1342,7 +1358,7 @@ def timeline_v2():
           </p>
         </div>
 
-        <div class="form-group" style="margin-top: 24px;">
+        <div class="form-group">
           <label>
             OCR Compute Mode
             <div class="tooltip-container">
@@ -1362,7 +1378,7 @@ def timeline_v2():
           </small>
         </div>
 
-        <div class="form-group" style="margin-top: 24px;">
+        <div class="form-group">
           <label style="display: flex; align-items: center; cursor: pointer;">
             <input type="checkbox" id="skipIncognitoCheckbox" checked style="width: 18px; height: 18px; margin-right: 10px; accent-color: #0d6efd;">
             Skip recording in incognito/private mode
@@ -1372,7 +1388,7 @@ def timeline_v2():
           </small>
         </div>
 
-        <div class="form-group" style="margin-top: 24px;">
+        <div class="form-group">
           <label>
             Server Port
              <div class="tooltip-container">
