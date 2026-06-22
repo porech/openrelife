@@ -38,6 +38,4 @@ def test_cosine_similarity_zero_vector():
     a = np.array([0, 0, 0])
     b = np.array([1, 0, 0])
     result = cosine_similarity(a, b)
-    assert np.isnan(
-        result
-    ), "Expected result to be NaN when one of the vectors is a zero vector"
+    assert result == 0.0, "Expected 0.0 when either vector has zero magnitude (see cosine_similarity docstring)"
