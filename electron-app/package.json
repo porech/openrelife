@@ -1,6 +1,6 @@
 {
   "name": "openrelife",
-  "version": "1.0.0-alpha24",
+  "version": "1.0.0-alpha25",
   "description": "OpenReLife - Screen Memory for macOS",
   "main": "main.js",
   "scripts": {
