@@ -3,6 +3,7 @@ import re
 import sqlite3
 import threading
 import time
+from contextlib import contextmanager
 from collections import namedtuple, OrderedDict
 import numpy as np
 import json
@@ -11,8 +12,15 @@ from typing import Any, List, Optional, Tuple
 from openrelife.config import db_path
 
 
-def _connect() -> sqlite3.Connection:
-    """Open a SQLite connection with per-connection PRAGMAs for concurrency.
+@contextmanager
+def _connect():
+    """Open a SQLite connection, commit/rollback the transaction, and always close it.
+
+    Used as `with _connect() as conn:`. This MUST close the connection: a bare
+    `with sqlite3.connect(...) as conn:` only commits/rolls back the transaction and
+    leaves the connection (and its .db/.db-wal/.db-shm fds) open. Across the timeline's
+    frequent /api/sync and /api/entry polls those leaked fds climb past select()'s
+    FD_SETSIZE (1024) and crash Waitress with "filedescriptor out of range in select()".
 
     - busy_timeout=5000: wait up to 5s on a locked DB (graceful retry, no SQLITE_BUSY)
     - synchronous=NORMAL: safe under WAL, faster than FULL on every commit
@@ -23,7 +31,14 @@ def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(db_path, timeout=5.0)
     conn.execute("PRAGMA busy_timeout = 5000")
     conn.execute("PRAGMA synchronous = NORMAL")
-    return conn
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 # Define the structure of a database entry using namedtuple

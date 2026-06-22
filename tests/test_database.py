@@ -72,6 +72,16 @@ class TestDatabase(unittest.TestCase):
         if self.conn:
             self.conn.close()
 
+    def test_connect_closes_connection_on_exit(self):
+        """_connect() must CLOSE the connection on exit, not merely manage the
+        transaction. A leaked connection keeps its .db/.db-wal/.db-shm fds open;
+        across frequent /api/sync and /api/entry polls those climb past select()'s
+        1024 limit and crash Waitress ('filedescriptor out of range in select()')."""
+        with openrelife.database._connect() as c:
+            c.execute("SELECT 1")
+        with self.assertRaises(sqlite3.ProgrammingError):
+            c.execute("SELECT 1")  # operating on a closed connection must raise
+
     def test_create_db(self):
         """Test if create_db creates the table and index."""
         # Check if table exists
