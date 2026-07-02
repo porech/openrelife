@@ -468,7 +468,7 @@ def timeline_v2():
     .fullscreen-container { width: 100vw; height: 100vh; position: relative; }
     
     /* Search bar */
-    .search-container { position: fixed; top: 20px; right: 20px; z-index: 1000; }
+    .search-container { position: fixed; top: 22px; left: 50%; right: auto; transform: translateX(-50%); z-index: 1000; }
     .search-wrapper { position: relative; }
     .search-input {
       width: min(400px, calc(100vw - 100px)); padding: 12px 45px 12px 20px; border-radius: 24px;
@@ -907,6 +907,128 @@ def timeline_v2():
       display: block; margin-top: 6px; font-size: 12px;
       color: rgba(255,255,255,0.5);
     }
+
+    /* ===== Redesigned menu: action cluster, text dialog, command palette ===== */
+    @keyframes orl-pop { from { opacity: 0; transform: translate(-50%, -48%) scale(.97); } to { opacity: 1; transform: translate(-50%, -50%) scale(1); } }
+    @keyframes orl-fade-down { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes orl-scrim-in { from { opacity: 0; } to { opacity: 1; } }
+
+    /* Action cluster (top-right) */
+    .action-cluster {
+      position: fixed; top: 24px; right: 24px; z-index: 1000;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .action-btn {
+      display: flex; align-items: center; gap: 7px; height: 40px; padding: 0 14px;
+      border-radius: 20px; border: 1px solid rgba(255,255,255,0.16);
+      background: rgba(20,20,20,0.78); backdrop-filter: blur(30px);
+      color: #fff; font-size: 13px; font-weight: 500; cursor: pointer;
+      transition: all 0.15s; font-family: inherit;
+    }
+    .action-btn i { font-size: 15px; }
+    .action-btn:hover { background: rgba(40,40,40,0.92); border-color: rgba(255,255,255,0.28); }
+    .action-btn.ai {
+      padding: 0 16px; border: none; font-weight: 600;
+      background: linear-gradient(180deg, #2b86ff, #0d6efd);
+      box-shadow: 0 4px 16px rgba(13,110,253,0.45);
+    }
+    .action-btn.ai:hover { filter: brightness(1.08); }
+
+    /* Text dialog */
+    .text-dialog-scrim {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 2000;
+      display: none; animation: orl-scrim-in 0.18s ease;
+    }
+    .text-dialog-scrim.show { display: block; }
+    .text-dialog {
+      position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      width: 640px; max-width: 82vw; max-height: 78vh; z-index: 2001;
+      background: rgba(28,28,30,0.98); backdrop-filter: blur(40px);
+      border: 1px solid rgba(255,255,255,0.12); border-radius: 18px;
+      box-shadow: 0 30px 90px rgba(0,0,0,0.7);
+      display: none; flex-direction: column; overflow: hidden;
+    }
+    .text-dialog.show { display: flex; animation: orl-pop 0.2s cubic-bezier(.2,.8,.2,1); }
+    .td-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 18px 20px 14px; flex: 0 0 auto;
+    }
+    .td-title { display: flex; align-items: center; gap: 11px; }
+    .td-title > span:first-child { font-size: 16px; font-weight: 600; color: #fff; }
+    .td-ts {
+      font-size: 11px; color: rgba(255,255,255,0.5);
+      background: rgba(255,255,255,0.07); padding: 3px 9px; border-radius: 20px;
+    }
+    .td-close {
+      width: 30px; height: 30px; border-radius: 50%; border: none;
+      background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.7);
+      font-size: 18px; line-height: 1; cursor: pointer; font-family: inherit;
+      display: flex; align-items: center; justify-content: center; transition: all 0.15s;
+    }
+    .td-close:hover { background: rgba(255,255,255,0.16); color: #fff; }
+    .td-toolbar {
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+      padding: 0 20px 14px; flex: 0 0 auto;
+    }
+    .mode-switch {
+      display: flex; align-items: center; gap: 8px;
+      background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 10px; padding: 6px 11px;
+    }
+    .mode-label { font-size: 11px; color: rgba(255,255,255,0.45); transition: color 0.2s; }
+    .mode-label.active { color: #fff; }
+    .mode-label.active.ai { color: #7fc0ff; }
+    .dialog-btn {
+      display: flex; align-items: center; gap: 7px; height: 34px; padding: 0 14px;
+      border-radius: 10px; border: 1px solid rgba(255,255,255,0.14);
+      background: rgba(255,255,255,0.05); color: #fff; font-size: 12.5px;
+      cursor: pointer; font-family: inherit; transition: all 0.15s;
+    }
+    .dialog-btn:hover { background: rgba(255,255,255,0.1); }
+    .dialog-btn.ai {
+      border: none; font-weight: 600;
+      background: linear-gradient(180deg, #2b86ff, #0d6efd);
+      box-shadow: 0 3px 12px rgba(13,110,253,0.4);
+    }
+    .dialog-btn.ai:hover { filter: brightness(1.08); }
+    .dialog-btn:disabled { opacity: 0.6; cursor: default; }
+    .td-banner {
+      display: none; align-items: center; gap: 8px; margin: 0 20px 12px;
+      font-size: 11px; color: #7fc0ff;
+      background: rgba(13,110,253,0.12); border: 1px solid rgba(13,110,253,0.3);
+      border-radius: 9px; padding: 8px 12px;
+    }
+    .td-banner.show { display: flex; }
+    .td-body { flex: 1 1 auto; overflow-y: auto; padding: 4px 20px 20px; min-height: 120px; }
+    .td-body pre {
+      white-space: pre-wrap; word-wrap: break-word; margin: 0;
+      font-size: 14.5px; line-height: 1.7; color: rgba(255,255,255,0.9);
+      font-family: inherit;
+    }
+
+    /* Command palette actions (under the search bar) */
+    .palette-actions {
+      position: fixed; top: 74px; left: 50%; transform: translateX(-50%);
+      width: 480px; max-width: 74vw; z-index: 1400;
+      background: rgba(28,28,30,0.98); backdrop-filter: blur(40px);
+      border: 1px solid rgba(255,255,255,0.12); border-radius: 16px;
+      box-shadow: 0 24px 70px rgba(0,0,0,0.7); padding: 8px;
+      display: none; animation: orl-fade-down 0.16s ease;
+    }
+    .palette-actions.show { display: block; }
+    .palette-section-label {
+      font-size: 10px; letter-spacing: 1.3px; text-transform: uppercase;
+      color: rgba(255,255,255,0.38); padding: 8px 10px 6px;
+    }
+    .palette-action {
+      display: flex; gap: 11px; align-items: center; padding: 10px;
+      border-radius: 10px; cursor: pointer; font-size: 13.5px; color: #fff;
+    }
+    .palette-action i { width: 20px; text-align: center; font-size: 15px; color: rgba(255,255,255,0.8); }
+    .palette-action:hover { background: rgba(255,255,255,0.09); }
+    .palette-action.muted { color: rgba(255,255,255,0.62); }
+    .palette-action.danger:hover { background: rgba(255,90,80,0.16); }
+    .palette-action.danger:hover i, .palette-action.danger:hover span { color: #ff8a80; }
     .config-modal-footer {
       padding: 20px 24px; border-top: 1px solid rgba(255,255,255,0.1);
       display: flex; justify-content: flex-end; gap: 12px;
@@ -1151,55 +1273,70 @@ def timeline_v2():
 </head>
 <body>
   <div class="fullscreen-container">
-    <!-- Sidebar toggle -->
-    <div class="sidebar-toggle" onclick="toggleSidebar()">
-      <i class="bi bi-list" style="font-size: 24px;"></i>
+    <!-- Action cluster (top-right) -->
+    <div class="action-cluster">
+      <button class="action-btn" onclick="openTextDialog(false)" title="Testo della schermata">
+        <i class="bi bi-body-text"></i> Testo
+      </button>
+      <button class="action-btn ai" onclick="openTextDialog(true)" title="Estrai testo con l'AI">
+        <i class="bi bi-stars"></i> AI
+      </button>
     </div>
-    
-    <!-- Sidebar -->
-    <div class="sidebar" id="sidebar">
-      <button class="sidebar-close" onclick="toggleSidebar()">&times;</button>
-      
-      <div class="sidebar-section">
-        <h3>App</h3>
-        <button class="sidebar-btn" onclick="hideAppWindow()">
-          <i class="bi bi-window-dash"></i> Hide window
-        </button>
-        <button class="sidebar-btn" onclick="quitAppFromMenu()">
-          <i class="bi bi-power"></i> Quit OpenReLife
-        </button>
-      </div>
 
-      <div class="sidebar-section">
-        <h3>OCR Settings</h3>
-        
-        <div class="ocr-mode-selector">
-          <span class="ocr-mode-label">Basic OCR</span>
+    <!-- Text dialog (current frame OCR text + actions) -->
+    <div class="text-dialog-scrim" id="textDialogScrim" onclick="closeTextDialog()"></div>
+    <div class="text-dialog" id="textDialog" role="dialog" aria-modal="true" aria-hidden="true">
+      <div class="td-header">
+        <div class="td-title">
+          <span>Testo della schermata</span>
+          <span class="td-ts" id="textDialogTs"></span>
+        </div>
+        <button class="td-close" onclick="closeTextDialog()" aria-label="Chiudi">&times;</button>
+      </div>
+      <div class="td-toolbar">
+        <div class="mode-switch">
+          <span class="mode-label" id="modeLabelBase">Base</span>
           <label class="toggle-switch">
             <input type="checkbox" id="ocrToggle" onchange="toggleOCRMode()">
             <span class="toggle-slider"></span>
           </label>
-          <span class="ocr-mode-label">AI OCR</span>
+          <span class="mode-label" id="modeLabelAi">AI</span>
         </div>
-        
-        <button class="sidebar-btn primary" onclick="runAIOCR()" id="btnRunAI">
-          <i class="bi bi-stars"></i> Run AI Text
+        <button class="dialog-btn ai" id="btnRunAI" onclick="runAIOCR()">
+          <i class="bi bi-stars"></i> Estrai con AI
         </button>
-        <button class="sidebar-btn" onclick="showAIConfig()">
-          <i class="bi bi-gear"></i> Configure AI Provider
+        <button class="dialog-btn" onclick="copyExtractedText()">
+          <i class="bi bi-clipboard"></i> Copia tutto
         </button>
       </div>
-      
-      <div class="sidebar-section">
-        <h3>Extracted Text</h3>
-        <button class="sidebar-btn" onclick="copyExtractedText()" style="margin-bottom: 12px;">
-          <i class="bi bi-clipboard"></i> Copy All
-        </button>
+      <div class="td-banner" id="textDialogBanner">
+        <i class="bi bi-stars"></i> Trascrizione AI · struttura e accenti ripristinati
+      </div>
+      <div class="td-body">
         <pre id="extractedText"></pre>
       </div>
-
     </div>
-    
+
+    <!-- Command palette: global actions (shown under the search bar on focus / Cmd-K) -->
+    <div class="palette-actions" id="paletteActions">
+      <div class="palette-section-label">Azioni</div>
+      <div class="palette-action" onmousedown="event.preventDefault()" onclick="paletteAction('text')">
+        <i class="bi bi-body-text"></i><span>Mostra testo di questa schermata</span>
+      </div>
+      <div class="palette-action" onmousedown="event.preventDefault()" onclick="paletteAction('ai')">
+        <i class="bi bi-stars" style="color:#2b86ff;"></i><span>Estrai testo con l'AI</span>
+      </div>
+      <div class="palette-action" onmousedown="event.preventDefault()" onclick="paletteAction('settings')">
+        <i class="bi bi-gear"></i><span>Impostazioni</span>
+      </div>
+      <div class="palette-action muted" onmousedown="event.preventDefault()" onclick="paletteAction('hide')">
+        <i class="bi bi-window-dash"></i><span>Nascondi finestra</span>
+      </div>
+      <div class="palette-action muted danger" onmousedown="event.preventDefault()" onclick="paletteAction('quit')">
+        <i class="bi bi-power"></i><span>Esci da OpenReLife</span>
+      </div>
+    </div>
+
     <!-- Search bar -->
     <div class="search-container">
       <div class="search-wrapper" id="searchWrapper">
@@ -1259,6 +1396,9 @@ def timeline_v2():
             <i class="bi bi-three-dots-vertical"></i>
           </div>
           <div class="timeline-menu" id="timelineMenu">
+             <div class="timeline-menu-item" onclick="calendarFromMenu()">
+               <i class="bi bi-calendar-event"></i> Vista calendario
+             </div>
              <div class="timeline-menu-item" onclick="openSettings()">
                <i class="bi bi-gear"></i> Settings
              </div>
@@ -1853,14 +1993,27 @@ def timeline_v2():
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
          let handled = false;
-         
-         // Close sidebar if open
-         const sidebar = document.getElementById('sidebar');
-         if (sidebar && sidebar.classList.contains('open')) {
-           toggleSidebar();
+
+         // Close the text dialog if open
+         if (isTextDialogOpen()) {
+           closeTextDialog();
            handled = true;
          }
-         
+
+         // Close the command palette if open
+         if (isPaletteOpen()) {
+           hidePaletteActions();
+           searchInput.blur();
+           handled = true;
+         }
+
+         // Close the timeline menu if open
+         const tlMenu = document.getElementById('timelineMenu');
+         if (tlMenu && tlMenu.classList.contains('show')) {
+           tlMenu.classList.remove('show');
+           handled = true;
+         }
+
          // Close AI config if open
          const aiConfig = document.getElementById('aiConfigModal');
          if (aiConfig && aiConfig.classList.contains('show')) {
@@ -2372,10 +2525,89 @@ def timeline_v2():
     }
     
     // Sidebar
-    function toggleSidebar() {
-      document.getElementById('sidebar').classList.toggle('open');
+    // ===== Text dialog (current frame OCR text + actions) =====
+    function openTextDialog(aiMode) {
+      hidePaletteActions();
+      if (aiMode) {
+        showOCRMode('ai');
+        if (!(currentEntry && currentEntry.ai_text)) runAIOCR();
+      }
+      refreshTextDialog();
+      document.getElementById('textDialogScrim').classList.add('show');
+      const dlg = document.getElementById('textDialog');
+      dlg.classList.add('show');
+      dlg.setAttribute('aria-hidden', 'false');
     }
-    
+    function closeTextDialog() {
+      document.getElementById('textDialog').classList.remove('show');
+      document.getElementById('textDialogScrim').classList.remove('show');
+      document.getElementById('textDialog').setAttribute('aria-hidden', 'true');
+    }
+    function isTextDialogOpen() {
+      const d = document.getElementById('textDialog');
+      return !!(d && d.classList.contains('show'));
+    }
+    // Keep the dialog chrome (timestamp, Base/AI labels, AI banner, Run-AI label)
+    // in sync with the current frame + mode. Cheap; safe to call on every frame change.
+    function refreshTextDialog() {
+      const tsEl = document.getElementById('textDialogTs');
+      if (tsEl) tsEl.textContent = currentEntry ? formatEntryTime(currentEntry.timestamp) : '';
+      const isAi = currentOCRMode === 'ai';
+      const base = document.getElementById('modeLabelBase');
+      const ai = document.getElementById('modeLabelAi');
+      if (base) base.classList.toggle('active', !isAi);
+      if (ai) { ai.classList.add('ai'); ai.classList.toggle('active', isAi); }
+      const banner = document.getElementById('textDialogBanner');
+      if (banner) banner.classList.toggle('show', !!(currentEntry && currentEntry.ai_text));
+      setRunAiLabel();
+    }
+    function setRunAiLabel() {
+      const btn = document.getElementById('btnRunAI');
+      if (!btn || btn.disabled) return;
+      const hasAi = currentEntry && currentEntry.ai_text;
+      btn.innerHTML = '<i class="bi bi-stars"></i> ' + (hasAi ? 'Rielabora' : 'Estrai con AI');
+    }
+    function formatEntryTime(ts) {
+      try { return new Date(ts / 1000).toLocaleString(); } catch (e) { return ''; }
+    }
+
+    // ===== Command palette: global actions under the search bar =====
+    function showPaletteActions() { document.getElementById('paletteActions').classList.add('show'); }
+    function hidePaletteActions() { document.getElementById('paletteActions').classList.remove('show'); }
+    function isPaletteOpen() { return document.getElementById('paletteActions').classList.contains('show'); }
+    function paletteAction(which) {
+      hidePaletteActions();
+      try { searchInput.blur(); } catch (e) {}
+      if (which === 'text') openTextDialog(false);
+      else if (which === 'ai') openTextDialog(true);
+      else if (which === 'settings') openSettings();
+      else if (which === 'hide') hideAppWindow();
+      else if (which === 'quit') quitAppFromMenu();
+    }
+    function calendarFromMenu() {
+      document.getElementById('timelineMenu').classList.remove('show');
+      const btn = document.querySelector('.calendar-btn');
+      if (btn) btn.click();
+    }
+
+    // Searchbar doubles as a command palette: focusing it (empty) shows global
+    // actions; typing hands off to the existing history search.
+    searchInput.addEventListener('focus', () => { if (!searchInput.value.trim()) showPaletteActions(); });
+    searchInput.addEventListener('input', () => { searchInput.value.trim() ? hidePaletteActions() : showPaletteActions(); });
+    searchInput.addEventListener('blur', () => { setTimeout(hidePaletteActions, 120); });
+    // Cmd/Ctrl-K focuses the searchbar (opens the palette); again or Esc closes it.
+    document.addEventListener('keydown', (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        if (document.activeElement === searchInput || isPaletteOpen()) {
+          hidePaletteActions(); searchInput.blur();
+        } else {
+          searchInput.focus();
+          if (!searchInput.value.trim()) showPaletteActions();
+        }
+      }
+    });
+
     let currentOCRMode = 'basic';
     let aiConfig = null;
     
@@ -2414,7 +2646,7 @@ def timeline_v2():
           showToast('Please configure AI settings first', 'error');
           showAIConfig();
           btn.disabled = false;
-          btn.innerHTML = '<i class="bi bi-stars"></i> Run AI Text';
+          setRunAiLabel();
           return;
         }
         
@@ -2445,7 +2677,8 @@ def timeline_v2():
         showToast('AI OCR error: ' + error.message, 'error');
       } finally {
         btn.disabled = false;
-        btn.innerHTML = '<i class="bi bi-stars"></i> Run AI Text';
+        setRunAiLabel();
+        refreshTextDialog();
       }
     }
     
@@ -2772,6 +3005,7 @@ def timeline_v2():
         const text = currentOCRMode === 'ai' && currentEntry.ai_text ? currentEntry.ai_text : currentEntry.text;
         document.getElementById('extractedText').textContent = text || 'No text available';
       }
+      refreshTextDialog();
     }
 
     // Electron UI Reset
@@ -2780,12 +3014,10 @@ def timeline_v2():
           openSettings();
       });
       window.electronAPI.onResetUI(() => {
-        // Close sidebar
-        const sidebar = document.getElementById('sidebar');
-        if (sidebar && sidebar.classList.contains('open')) {
-          toggleSidebar();
-        }
-        
+        // Close the redesigned menu surfaces
+        closeTextDialog();
+        hidePaletteActions();
+
         // Close AI config
         closeAIConfig();
         
