@@ -178,6 +178,23 @@ def get_recording_paused() -> bool:
     global is_recording_paused
     return is_recording_paused
 
+
+# When the OpenReLife viewer window is on screen it fills the whole display, so any
+# capture would just screenshot the app itself (including its dialogs/menus). The
+# frontmost-app heuristic (is_self_capture) is not reliable for our borderless
+# always-on-top overlay, so the Electron shell flips this flag on window show/hide
+# and the capture loop hard-skips while it is set. This is separate from the manual
+# pause toggle so closing the viewer restores whatever recording state the user chose.
+viewer_open = False
+
+def set_viewer_open(open_: bool):
+    global viewer_open
+    viewer_open = bool(open_)
+
+def get_viewer_open() -> bool:
+    global viewer_open
+    return viewer_open
+
 def set_screenshot_interval(interval: int):
     global screenshot_interval
     screenshot_interval = max(1, interval)
@@ -240,6 +257,14 @@ def record_screenshots_thread():
             if is_recording_paused:
                 if cycle_count % 60 == 0:
                     _logger.debug("Recording paused")
+                time.sleep(1)
+                continue
+
+            # Never capture while the viewer window is on screen — it fills the
+            # display, so a capture would just screenshot OpenReLife itself.
+            if viewer_open:
+                if cycle_count % 60 == 0:
+                    _logger.debug("Viewer open, skipping capture")
                 time.sleep(1)
                 continue
 

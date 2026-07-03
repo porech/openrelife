@@ -110,6 +110,11 @@ function createWindow() {
     icon: path.join(__dirname, 'app-icon.png')
   });
 
+  // Whenever the window shows/hides, tell the backend so capture never grabs the
+  // app itself — covers the initial ready-to-show, the tray "Show", and hide paths.
+  mainWindow.on('show', () => setViewerOpen(true));
+  mainWindow.on('hide', () => setViewerOpen(false));
+
   // Enable DevTools for debugging
   //mainWindow.webContents.openDevTools({ mode: 'detach' });
 
@@ -180,8 +185,22 @@ function createWindow() {
   });
 } 
 
+function setViewerOpen(open, attempt = 0) {
+  // Tell the backend whether the viewer window is on screen so the capture loop
+  // never screenshots OpenReLife itself. The backend may still be starting at
+  // launch, so retry briefly — the initial "viewer visible" state must not be lost.
+  fetch(`${openRecallUrl}/api/viewer-open`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ open })
+  }).catch(() => {
+    if (attempt < 30) setTimeout(() => setViewerOpen(open, attempt + 1), 500);
+  });
+}
+
 function showWindow() {
   windowShouldBeVisible = true;
+  setViewerOpen(true);
 
   if (mainWindow === null) {
     createWindow();
@@ -226,9 +245,11 @@ function hideWindow() {
         mainWindow.hide();
       }
       isHiding = false;
+      setViewerOpen(false);  // resume capture only after the window is gone
     }, 150);
   } else {
     isHiding = false;
+    setViewerOpen(false);
   }
 }
 

@@ -15,6 +15,7 @@ from openrelife.screenshot import (
     ocr_worker_thread,
     get_recording_paused,
     set_recording_paused,
+    set_viewer_open,
     get_screenshot_interval,
     set_screenshot_interval,
     get_screenshot_quality,
@@ -910,7 +911,7 @@ def timeline_v2():
 
     /* ===== Redesigned menu: action cluster, text dialog, command palette ===== */
     @keyframes orl-pop { from { opacity: 0; transform: translate(-50%, -48%) scale(.97); } to { opacity: 1; transform: translate(-50%, -50%) scale(1); } }
-    @keyframes orl-fade-down { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes orl-palette-in { from { opacity: 0; transform: translateX(-50%) translateY(-10px) scale(.97); } to { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); } }
     @keyframes orl-scrim-in { from { opacity: 0; } to { opacity: 1; } }
 
     /* Action cluster (top-right) */
@@ -1000,11 +1001,33 @@ def timeline_v2():
     }
     .td-banner.show { display: flex; }
     .td-body { flex: 1 1 auto; overflow-y: auto; padding: 4px 20px 20px; min-height: 120px; }
-    .td-body pre {
+    .td-text {
       white-space: pre-wrap; word-wrap: break-word; margin: 0;
-      font-size: 14.5px; line-height: 1.7; color: rgba(255,255,255,0.9);
-      font-family: inherit;
+      font-size: 14px; line-height: 1.7; color: rgba(255,255,255,0.88);
+      font-family: inherit; user-select: text;
     }
+    .td-text:empty::before { content: "No text for this frame."; color: rgba(255,255,255,0.4); }
+    /* Find-in-text bar */
+    .td-find {
+      display: none; align-items: center; gap: 8px; margin: 0 20px 12px;
+      padding: 6px 10px; border-radius: 10px;
+      background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.12);
+    }
+    .td-find.show { display: flex; }
+    .td-find-icon { color: rgba(255,255,255,0.45); font-size: 13px; }
+    .td-find input {
+      flex: 1; min-width: 0; background: transparent; border: none; outline: none;
+      color: #fff; font-size: 13px; font-family: inherit;
+    }
+    .td-find-count { font-size: 11px; color: rgba(255,255,255,0.45); font-variant-numeric: tabular-nums; }
+    .td-find-btn {
+      width: 26px; height: 26px; border-radius: 7px; border: none; cursor: pointer;
+      background: transparent; color: rgba(255,255,255,0.6); font-size: 12px;
+      display: flex; align-items: center; justify-content: center; transition: all 0.12s;
+    }
+    .td-find-btn:hover { background: rgba(255,255,255,0.1); color: #fff; }
+    .td-text mark.find-hl { background: rgba(13,110,253,0.32); color: #eaf4ff; border-radius: 3px; }
+    .td-text mark.find-hl.current { background: #0d6efd; color: #fff; box-shadow: 0 0 0 2px rgba(13,110,253,0.4); }
 
     /* Command palette actions (under the search bar) */
     .palette-actions {
@@ -1013,9 +1036,9 @@ def timeline_v2():
       background: rgba(28,28,30,0.98); backdrop-filter: blur(40px);
       border: 1px solid rgba(255,255,255,0.12); border-radius: 16px;
       box-shadow: 0 24px 70px rgba(0,0,0,0.7); padding: 8px;
-      display: none; animation: orl-fade-down 0.16s ease;
+      display: none; transform-origin: top center;
     }
-    .palette-actions.show { display: block; }
+    .palette-actions.show { display: block; animation: orl-palette-in 0.22s cubic-bezier(.2,.8,.2,1); }
     .palette-section-label {
       font-size: 10px; letter-spacing: 1.3px; text-transform: uppercase;
       color: rgba(255,255,255,0.38); padding: 8px 10px 6px;
@@ -1275,11 +1298,8 @@ def timeline_v2():
   <div class="fullscreen-container">
     <!-- Action cluster (top-right) -->
     <div class="action-cluster">
-      <button class="action-btn" onclick="openTextDialog(false)" title="Testo della schermata">
-        <i class="bi bi-body-text"></i> Testo
-      </button>
-      <button class="action-btn ai" onclick="openTextDialog(true)" title="Estrai testo con l'AI">
-        <i class="bi bi-stars"></i> AI
+      <button class="action-btn" onclick="openTextDialog(false)" title="Show this screen's text">
+        <i class="bi bi-body-text"></i> Text
       </button>
     </div>
 
@@ -1310,30 +1330,33 @@ def timeline_v2():
         </button>
       </div>
       <div class="td-banner" id="textDialogBanner">
-        <i class="bi bi-stars"></i> Trascrizione AI · struttura e accenti ripristinati
+        <i class="bi bi-stars"></i> AI transcription · structure and accents restored
+      </div>
+      <div class="td-find" id="dialogFind">
+        <i class="bi bi-search td-find-icon"></i>
+        <input type="text" id="dialogFindInput" placeholder="Find in text…" autocomplete="off"
+               oninput="dialogFindRun()" onkeydown="dialogFindKey(event)">
+        <span class="td-find-count" id="dialogFindCount">0/0</span>
+        <button class="td-find-btn" onclick="dialogFindStep(-1)" title="Previous match"><i class="bi bi-chevron-up"></i></button>
+        <button class="td-find-btn" onclick="dialogFindStep(1)" title="Next match"><i class="bi bi-chevron-down"></i></button>
+        <button class="td-find-btn" onclick="closeDialogFind()" title="Close (Esc)"><i class="bi bi-x-lg"></i></button>
       </div>
       <div class="td-body">
-        <pre id="extractedText"></pre>
+        <div id="extractedText" class="td-text"></div>
       </div>
     </div>
 
     <!-- Command palette: global actions (shown under the search bar on focus / Cmd-K) -->
     <div class="palette-actions" id="paletteActions">
-      <div class="palette-section-label">Azioni</div>
-      <div class="palette-action" onmousedown="event.preventDefault()" onclick="paletteAction('text')">
-        <i class="bi bi-body-text"></i><span>Mostra testo di questa schermata</span>
-      </div>
-      <div class="palette-action" onmousedown="event.preventDefault()" onclick="paletteAction('ai')">
-        <i class="bi bi-stars" style="color:#2b86ff;"></i><span>Estrai testo con l'AI</span>
-      </div>
+      <div class="palette-section-label">Actions</div>
       <div class="palette-action" onmousedown="event.preventDefault()" onclick="paletteAction('settings')">
-        <i class="bi bi-gear"></i><span>Impostazioni</span>
+        <i class="bi bi-gear"></i><span>Settings</span>
       </div>
       <div class="palette-action muted" onmousedown="event.preventDefault()" onclick="paletteAction('hide')">
-        <i class="bi bi-window-dash"></i><span>Nascondi finestra</span>
+        <i class="bi bi-window-dash"></i><span>Hide window</span>
       </div>
       <div class="palette-action muted danger" onmousedown="event.preventDefault()" onclick="paletteAction('quit')">
-        <i class="bi bi-power"></i><span>Esci da OpenReLife</span>
+        <i class="bi bi-power"></i><span>Quit OpenReLife</span>
       </div>
     </div>
 
@@ -1396,9 +1419,6 @@ def timeline_v2():
             <i class="bi bi-three-dots-vertical"></i>
           </div>
           <div class="timeline-menu" id="timelineMenu">
-             <div class="timeline-menu-item" onclick="calendarFromMenu()">
-               <i class="bi bi-calendar-event"></i> Vista calendario
-             </div>
              <div class="timeline-menu-item" onclick="openSettings()">
                <i class="bi bi-gear"></i> Settings
              </div>
@@ -1994,8 +2014,12 @@ def timeline_v2():
       if (e.key === 'Escape') {
          let handled = false;
 
-         // Close the text dialog if open
-         if (isTextDialogOpen()) {
+         // In the text dialog: Esc closes the find bar first, then the dialog
+         const findBar = document.getElementById('dialogFind');
+         if (findBar && findBar.classList.contains('show')) {
+           closeDialogFind();
+           handled = true;
+         } else if (isTextDialogOpen()) {
            closeTextDialog();
            handled = true;
          }
@@ -2528,6 +2552,7 @@ def timeline_v2():
     // ===== Text dialog (current frame OCR text + actions) =====
     function openTextDialog(aiMode) {
       hidePaletteActions();
+      closeDialogFind();
       if (aiMode) {
         showOCRMode('ai');
         if (!(currentEntry && currentEntry.ai_text)) runAIOCR();
@@ -2539,6 +2564,7 @@ def timeline_v2():
       dlg.setAttribute('aria-hidden', 'false');
     }
     function closeTextDialog() {
+      closeDialogFind();
       document.getElementById('textDialog').classList.remove('show');
       document.getElementById('textDialogScrim').classList.remove('show');
       document.getElementById('textDialog').setAttribute('aria-hidden', 'true');
@@ -2571,6 +2597,62 @@ def timeline_v2():
       try { return new Date(ts / 1000).toLocaleString(); } catch (e) { return ''; }
     }
 
+    // ===== Find-in-text inside the dialog (Cmd/Ctrl-F) =====
+    let _findMatches = [], _findCurrent = -1;
+    function openDialogFind() {
+      if (!isTextDialogOpen()) return;
+      document.getElementById('dialogFind').classList.add('show');
+      const inp = document.getElementById('dialogFindInput');
+      inp.focus(); inp.select();
+      dialogFindRun();
+    }
+    function closeDialogFind() {
+      document.getElementById('dialogFind').classList.remove('show');
+      document.getElementById('dialogFindInput').value = '';
+      const body = document.getElementById('extractedText');
+      body.textContent = body.textContent;  // collapse <mark>s back to plain text
+      _findMatches = []; _findCurrent = -1;
+      document.getElementById('dialogFindCount').textContent = '0/0';
+    }
+    function _escHtml(s) { return s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+    function dialogFindRun() {
+      const q = document.getElementById('dialogFindInput').value;
+      const body = document.getElementById('extractedText');
+      const raw = body.textContent;
+      if (!q) { body.textContent = raw; _findMatches = []; _findCurrent = -1; _updateFindCount(); return; }
+      // Case-insensitive substring find (indexOf avoids regex-escaping the query).
+      const hay = raw.toLowerCase(), needle = q.toLowerCase();
+      let html = '', last = 0, idx = hay.indexOf(needle);
+      while (idx !== -1) {
+        html += _escHtml(raw.slice(last, idx)) + '<mark class="find-hl">' + _escHtml(raw.substr(idx, q.length)) + '</mark>';
+        last = idx + q.length;
+        idx = hay.indexOf(needle, last);
+      }
+      html += _escHtml(raw.slice(last));
+      body.innerHTML = html;
+      _findMatches = Array.prototype.slice.call(body.querySelectorAll('.find-hl'));
+      _findCurrent = _findMatches.length ? 0 : -1;
+      _highlightCurrentFind();
+      _updateFindCount();
+    }
+    function _highlightCurrentFind() {
+      _findMatches.forEach((el, i) => el.classList.toggle('current', i === _findCurrent));
+      if (_findCurrent >= 0) _findMatches[_findCurrent].scrollIntoView({block: 'center', behavior: 'smooth'});
+    }
+    function _updateFindCount() {
+      document.getElementById('dialogFindCount').textContent =
+        (_findMatches.length ? (_findCurrent + 1) : 0) + '/' + _findMatches.length;
+    }
+    function dialogFindStep(dir) {
+      if (!_findMatches.length) return;
+      _findCurrent = (_findCurrent + dir + _findMatches.length) % _findMatches.length;
+      _highlightCurrentFind(); _updateFindCount();
+    }
+    function dialogFindKey(e) {
+      if (e.key === 'Enter') { e.preventDefault(); dialogFindStep(e.shiftKey ? -1 : 1); }
+      else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeDialogFind(); }
+    }
+
     // ===== Command palette: global actions under the search bar =====
     function showPaletteActions() { document.getElementById('paletteActions').classList.add('show'); }
     function hidePaletteActions() { document.getElementById('paletteActions').classList.remove('show'); }
@@ -2584,12 +2666,6 @@ def timeline_v2():
       else if (which === 'hide') hideAppWindow();
       else if (which === 'quit') quitAppFromMenu();
     }
-    function calendarFromMenu() {
-      document.getElementById('timelineMenu').classList.remove('show');
-      const btn = document.querySelector('.calendar-btn');
-      if (btn) btn.click();
-    }
-
     // Searchbar doubles as a command palette: focusing it (empty) shows global
     // actions; typing hands off to the existing history search.
     searchInput.addEventListener('focus', () => { if (!searchInput.value.trim()) showPaletteActions(); });
@@ -2605,6 +2681,10 @@ def timeline_v2():
           searchInput.focus();
           if (!searchInput.value.trim()) showPaletteActions();
         }
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'f' && isTextDialogOpen()) {
+        e.preventDefault();
+        openDialogFind();
       }
     });
 
@@ -3202,6 +3282,15 @@ def pause_recording():
 def resume_recording():
     set_recording_paused(False)
     return jsonify({"paused": False})
+
+
+@app.route("/api/viewer-open", methods=["POST"])
+def api_viewer_open():
+    """The Electron shell reports whether the viewer window is on screen, so the
+    capture loop never screenshots the app itself. See screenshot.set_viewer_open."""
+    data = request.json or {}
+    set_viewer_open(bool(data.get("open", False)))
+    return jsonify({"viewer_open": bool(data.get("open", False))})
 
 
 @app.route("/api/delete", methods=["POST"])
