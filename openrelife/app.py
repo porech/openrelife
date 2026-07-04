@@ -920,13 +920,13 @@ def timeline_v2():
       display: flex; align-items: center; gap: 8px;
     }
     .action-btn {
-      display: flex; align-items: center; gap: 7px; height: 40px; padding: 0 14px;
+      display: flex; align-items: center; justify-content: center; gap: 7px; height: 40px; padding: 0 16px;
       border-radius: 20px; border: 1px solid rgba(255,255,255,0.16);
       background: rgba(20,20,20,0.78); backdrop-filter: blur(30px);
-      color: #fff; font-size: 13px; font-weight: 500; cursor: pointer;
+      color: #fff; font-size: 13px; font-weight: 500; line-height: 1; cursor: pointer;
       transition: all 0.15s; font-family: inherit;
     }
-    .action-btn i { font-size: 15px; }
+    .action-btn i { font-size: 15px; line-height: 1; }
     .action-btn:hover { background: rgba(40,40,40,0.92); border-color: rgba(255,255,255,0.28); }
     .action-btn.ai {
       padding: 0 16px; border: none; font-weight: 600;
@@ -1322,9 +1322,7 @@ def timeline_v2():
   <div class="fullscreen-container">
     <!-- Action cluster (top-right) -->
     <div class="action-cluster">
-      <button class="action-btn" onclick="openTextDialog(false)" title="Show this screen's text">
-        <i class="bi bi-body-text"></i> Text
-      </button>
+      <button class="action-btn" onclick="openTextDialog(false)" title="Show this screen's text"><i class="bi bi-body-text"></i><span>Text</span></button>
     </div>
 
     <!-- Text dialog (current frame OCR text + actions) -->
