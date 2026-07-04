@@ -976,9 +976,19 @@ def timeline_v2():
       background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);
       border-radius: 10px; padding: 6px 11px;
     }
-    .mode-label { font-size: 11px; color: rgba(255,255,255,0.45); transition: color 0.2s; }
+    .mode-label { font-size: 11px; font-weight: 500; color: rgba(255,255,255,0.45); transition: color 0.2s; }
     .mode-label.active { color: #fff; }
-    .mode-label.active.ai { color: #7fc0ff; }
+    .mode-label.ai.active { color: #7fc0ff; }
+    .src-track {
+      width: 34px; height: 18px; border: none; padding: 0; border-radius: 10px;
+      background: rgba(255,255,255,0.22); position: relative; cursor: pointer; transition: background 0.2s;
+    }
+    .mode-switch.on .src-track { background: #0d6efd; }
+    .src-knob {
+      position: absolute; top: 2px; left: 2px; width: 14px; height: 14px;
+      border-radius: 50%; background: #fff; transition: left 0.2s; pointer-events: none;
+    }
+    .mode-switch.on .src-knob { left: 18px; }
     .dialog-btn {
       display: flex; align-items: center; gap: 7px; height: 34px; padding: 0 14px;
       border-radius: 10px; border: 1px solid rgba(255,255,255,0.14);
@@ -986,48 +996,62 @@ def timeline_v2():
       cursor: pointer; font-family: inherit; transition: all 0.15s;
     }
     .dialog-btn:hover { background: rgba(255,255,255,0.1); }
+    .dialog-btn.icon { width: 34px; padding: 0; justify-content: center; margin-left: auto; font-size: 14px; color: rgba(255,255,255,0.75); }
+    .dialog-btn.icon.active { background: rgba(13,110,253,0.25); border-color: rgba(13,110,253,0.45); color: #fff; }
     .dialog-btn.ai {
       border: none; font-weight: 600;
       background: linear-gradient(180deg, #2b86ff, #0d6efd);
       box-shadow: 0 3px 12px rgba(13,110,253,0.4);
     }
     .dialog-btn.ai:hover { filter: brightness(1.08); }
-    .dialog-btn:disabled { opacity: 0.6; cursor: default; }
+    .dialog-btn.disabled { opacity: 0.4; pointer-events: none; }
+    .dialog-btn.ai.running { opacity: 0.55; pointer-events: none; }
+    .ai-spinner {
+      display: none; width: 12px; height: 12px; border: 2px solid rgba(255,255,255,0.35);
+      border-top-color: #fff; border-radius: 50%; animation: orl-spin 0.7s linear infinite;
+    }
+    @keyframes orl-spin { to { transform: rotate(360deg); } }
     .td-banner {
       display: none; align-items: center; gap: 8px; margin: 0 20px 12px;
-      font-size: 11px; color: #7fc0ff;
+      font-size: 11.5px; color: #7fc0ff;
       background: rgba(13,110,253,0.12); border: 1px solid rgba(13,110,253,0.3);
       border-radius: 9px; padding: 8px 12px;
     }
     .td-banner.show { display: flex; }
-    .td-body { flex: 1 1 auto; overflow-y: auto; padding: 4px 20px 20px; min-height: 120px; }
-    .td-text {
-      white-space: pre-wrap; word-wrap: break-word; margin: 0;
-      font-size: 14px; line-height: 1.7; color: rgba(255,255,255,0.88);
-      font-family: inherit; user-select: text;
-    }
-    .td-text:empty::before { content: "No text for this frame."; color: rgba(255,255,255,0.4); }
     /* Find-in-text bar */
     .td-find {
       display: none; align-items: center; gap: 8px; margin: 0 20px 12px;
-      padding: 6px 10px; border-radius: 10px;
-      background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.12);
+      padding: 7px 8px 7px 12px; border-radius: 10px;
+      background: rgba(255,255,255,0.05); border: 1px solid rgba(13,110,253,0.45);
     }
-    .td-find.show { display: flex; }
-    .td-find-icon { color: rgba(255,255,255,0.45); font-size: 13px; }
+    .td-find.show { display: flex; animation: orl-td-fade 0.15s ease; }
+    @keyframes orl-td-fade { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: translateY(0); } }
+    .td-find-icon { color: rgba(255,255,255,0.45); font-size: 13px; flex: none; }
     .td-find input {
-      flex: 1; min-width: 0; background: transparent; border: none; outline: none;
+      flex: 1; min-width: 60px; background: transparent; border: none; outline: none;
       color: #fff; font-size: 13px; font-family: inherit;
     }
-    .td-find-count { font-size: 11px; color: rgba(255,255,255,0.45); font-variant-numeric: tabular-nums; }
+    .td-find-count { font-size: 11.5px; color: rgba(255,255,255,0.5); font-variant-numeric: tabular-nums; flex: none; }
     .td-find-btn {
-      width: 26px; height: 26px; border-radius: 7px; border: none; cursor: pointer;
+      width: 26px; height: 26px; border-radius: 7px; border: none; cursor: pointer; flex: none;
       background: transparent; color: rgba(255,255,255,0.6); font-size: 12px;
       display: flex; align-items: center; justify-content: center; transition: all 0.12s;
     }
     .td-find-btn:hover { background: rgba(255,255,255,0.1); color: #fff; }
-    .td-text mark.find-hl { background: rgba(13,110,253,0.32); color: #eaf4ff; border-radius: 3px; }
-    .td-text mark.find-hl.current { background: #0d6efd; color: #fff; box-shadow: 0 0 0 2px rgba(13,110,253,0.4); }
+    /* Text body (scroll container) */
+    .td-body {
+      flex: 1 1 auto; overflow-y: auto; padding: 2px 20px 18px; min-height: 140px; position: relative;
+      white-space: pre-wrap; word-break: break-word; user-select: text;
+      font-size: 13.5px; line-height: 1.7; color: rgba(255,255,255,0.88); font-family: inherit;
+    }
+    .td-body.ai-size { font-size: 14.5px; }
+    .td-state {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      min-height: 180px; gap: 8px; color: rgba(255,255,255,0.4); white-space: normal; text-align: center;
+    }
+    .td-state .td-state-hint { font-size: 12px; color: rgba(255,255,255,0.35); }
+    .td-body mark.find-hl { background: rgba(13,110,253,0.32); color: #eaf4ff; border-radius: 3px; padding: 0 1px; }
+    .td-body mark.find-hl.current { background: #0d6efd; color: #fff; }
 
     /* Command palette actions (under the search bar) */
     .palette-actions {
@@ -1308,42 +1332,38 @@ def timeline_v2():
     <div class="text-dialog" id="textDialog" role="dialog" aria-modal="true" aria-hidden="true">
       <div class="td-header">
         <div class="td-title">
-          <span>Testo della schermata</span>
+          <span>Screen text</span>
           <span class="td-ts" id="textDialogTs"></span>
         </div>
-        <button class="td-close" onclick="closeTextDialog()" aria-label="Chiudi">&times;</button>
+        <button class="td-close" onclick="closeTextDialog()" aria-label="Close" title="Close (Esc)">&times;</button>
       </div>
       <div class="td-toolbar">
-        <div class="mode-switch">
+        <div class="mode-switch" id="sourceSwitch">
           <span class="mode-label" id="modeLabelBase">Base</span>
-          <label class="toggle-switch">
-            <input type="checkbox" id="ocrToggle" onchange="toggleOCRMode()">
-            <span class="toggle-slider"></span>
-          </label>
-          <span class="mode-label" id="modeLabelAi">AI</span>
+          <button class="src-track" onclick="toggleOCRMode()" title="Switch text source" aria-label="Switch text source"><span class="src-knob"></span></button>
+          <span class="mode-label ai" id="modeLabelAi">AI</span>
         </div>
         <button class="dialog-btn ai" id="btnRunAI" onclick="runAIOCR()">
-          <i class="bi bi-stars"></i> Estrai con AI
+          <span class="ai-spinner"></span><i class="bi bi-stars ai-star"></i> <span class="run-label">Extract with AI</span>
         </button>
-        <button class="dialog-btn" onclick="copyExtractedText()">
-          <i class="bi bi-clipboard"></i> Copia tutto
+        <button class="dialog-btn" id="btnCopyText" onclick="copyExtractedText()">
+          <i class="bi bi-clipboard"></i> <span class="copy-label">Copy all</span>
         </button>
+        <button class="dialog-btn icon" id="btnFind" onclick="openDialogFind()" title="Find in text (⌘F)"><i class="bi bi-search"></i></button>
+      </div>
+      <div class="td-find" id="dialogFind">
+        <i class="bi bi-search td-find-icon"></i>
+        <input type="text" id="dialogFindInput" placeholder="Find in text" autocomplete="off"
+               oninput="dialogFindRun()" onkeydown="dialogFindKey(event)">
+        <span class="td-find-count" id="dialogFindCount"></span>
+        <button class="td-find-btn" onclick="dialogFindStep(-1)" title="Previous (⇧↵)"><i class="bi bi-chevron-up"></i></button>
+        <button class="td-find-btn" onclick="dialogFindStep(1)" title="Next (↵)"><i class="bi bi-chevron-down"></i></button>
+        <button class="td-find-btn" onclick="closeDialogFind()" title="Close (Esc)"><i class="bi bi-x-lg"></i></button>
       </div>
       <div class="td-banner" id="textDialogBanner">
         <i class="bi bi-stars"></i> AI transcription · structure and accents restored
       </div>
-      <div class="td-find" id="dialogFind">
-        <i class="bi bi-search td-find-icon"></i>
-        <input type="text" id="dialogFindInput" placeholder="Find in text…" autocomplete="off"
-               oninput="dialogFindRun()" onkeydown="dialogFindKey(event)">
-        <span class="td-find-count" id="dialogFindCount">0/0</span>
-        <button class="td-find-btn" onclick="dialogFindStep(-1)" title="Previous match"><i class="bi bi-chevron-up"></i></button>
-        <button class="td-find-btn" onclick="dialogFindStep(1)" title="Next match"><i class="bi bi-chevron-down"></i></button>
-        <button class="td-find-btn" onclick="closeDialogFind()" title="Close (Esc)"><i class="bi bi-x-lg"></i></button>
-      </div>
-      <div class="td-body">
-        <div id="extractedText" class="td-text"></div>
-      </div>
+      <div id="extractedText" class="td-body"></div>
     </div>
 
     <!-- Command palette: global actions (shown under the search bar on focus / Cmd-K) -->
@@ -2550,6 +2570,9 @@ def timeline_v2():
     
     // Sidebar
     // ===== Text dialog (current frame OCR text + actions) =====
+    let _aiRunning = false;                 // AI transcription in progress
+    let _findCount = 0, _findCurrent = 0, _copyT = null;
+
     function openTextDialog(aiMode) {
       hidePaletteActions();
       closeDialogFind();
@@ -2573,80 +2596,132 @@ def timeline_v2():
       const d = document.getElementById('textDialog');
       return !!(d && d.classList.contains('show'));
     }
-    // Keep the dialog chrome (timestamp, Base/AI labels, AI banner, Run-AI label)
-    // in sync with the current frame + mode. Cheap; safe to call on every frame change.
-    function refreshTextDialog() {
-      const tsEl = document.getElementById('textDialogTs');
-      if (tsEl) tsEl.textContent = currentEntry ? formatEntryTime(currentEntry.timestamp) : '';
-      const isAi = currentOCRMode === 'ai';
-      const base = document.getElementById('modeLabelBase');
-      const ai = document.getElementById('modeLabelAi');
-      if (base) base.classList.toggle('active', !isAi);
-      if (ai) { ai.classList.add('ai'); ai.classList.toggle('active', isAi); }
-      const banner = document.getElementById('textDialogBanner');
-      if (banner) banner.classList.toggle('show', !!(currentEntry && currentEntry.ai_text));
-      setRunAiLabel();
-    }
-    function setRunAiLabel() {
-      const btn = document.getElementById('btnRunAI');
-      if (!btn || btn.disabled) return;
-      const hasAi = currentEntry && currentEntry.ai_text;
-      btn.innerHTML = '<i class="bi bi-stars"></i> ' + (hasAi ? 'Rielabora' : 'Estrai con AI');
-    }
     function formatEntryTime(ts) {
       try { return new Date(ts / 1000).toLocaleString(); } catch (e) { return ''; }
     }
+    // The text currently shown: '' = frame has no base text, null = AI source but no
+    // transcription yet, otherwise the string.
+    function _dialogShownText() {
+      if (!currentEntry) return '';
+      if (currentOCRMode === 'ai') return currentEntry.ai_text || null;
+      return currentEntry.text || '';
+    }
+    // Sync ALL dialog chrome + body to the current frame, source, and AI state.
+    function refreshTextDialog() {
+      const isAi = currentOCRMode === 'ai';
+      const aiDone = !!(currentEntry && currentEntry.ai_text);
+      const tsEl = document.getElementById('textDialogTs');
+      if (tsEl) tsEl.textContent = currentEntry ? formatEntryTime(currentEntry.timestamp) : '';
+      const sw = document.getElementById('sourceSwitch');
+      if (sw) sw.classList.toggle('on', isAi);
+      const base = document.getElementById('modeLabelBase'), ai = document.getElementById('modeLabelAi');
+      if (base) base.classList.toggle('active', !isAi);
+      if (ai) ai.classList.toggle('active', isAi);
+      const runBtn = document.getElementById('btnRunAI');
+      if (runBtn) {
+        runBtn.classList.toggle('running', _aiRunning);
+        const spin = runBtn.querySelector('.ai-spinner'), star = runBtn.querySelector('.ai-star'), lbl = runBtn.querySelector('.run-label');
+        if (spin) spin.style.display = _aiRunning ? 'inline-block' : 'none';
+        if (star) star.style.display = _aiRunning ? 'none' : 'inline';
+        if (lbl) lbl.textContent = _aiRunning ? 'Transcribing…' : (aiDone ? 'Re-run' : 'Extract with AI');
+      }
+      const copyBtn = document.getElementById('btnCopyText');
+      if (copyBtn) copyBtn.classList.toggle('disabled', !_dialogShownText());
+      const banner = document.getElementById('textDialogBanner');
+      if (banner) banner.classList.toggle('show', isAi && aiDone);
+      const findBtn = document.getElementById('btnFind'), findBar = document.getElementById('dialogFind');
+      if (findBtn && findBar) findBtn.classList.toggle('active', findBar.classList.contains('show'));
+      renderDialogBody();
+    }
+    // Render the body: empty / AI-not-run states, or the text (with find highlights).
+    function renderDialogBody() {
+      const body = document.getElementById('extractedText');
+      if (!body) return;
+      const isAi = currentOCRMode === 'ai';
+      const aiDone = !!(currentEntry && currentEntry.ai_text);
+      body.classList.toggle('ai-size', isAi && aiDone);
+      const t = _dialogShownText();
+      if (t === null) {
+        body.innerHTML = '<div class="td-state"><i class="bi bi-stars" style="font-size:24px;color:#7fc0ff;"></i>' +
+          '<span>No AI transcription for this frame yet.</span>' +
+          '<span class="td-state-hint">Use “Extract with AI” above to create one.</span></div>';
+        return;
+      }
+      if (!t) {
+        body.innerHTML = '<div class="td-state"><i class="bi bi-justify-left" style="font-size:26px;"></i>' +
+          '<span>No text for this frame.</span></div>';
+        return;
+      }
+      const findBar = document.getElementById('dialogFind');
+      const q = (findBar && findBar.classList.contains('show')) ? _dialogFindQuery().toLowerCase() : '';
+      if (!q || _findCount === 0) { body.textContent = t; return; }
+      const hay = t.toLowerCase();
+      let html = '', last = 0, m = 0, idx = hay.indexOf(q);
+      while (idx !== -1) {
+        html += _escHtml(t.slice(last, idx));
+        html += '<mark class="find-hl' + (m === _findCurrent ? ' current' : '') + '">' + _escHtml(t.substr(idx, q.length)) + '</mark>';
+        last = idx + q.length; m++;
+        idx = hay.indexOf(q, last);
+      }
+      html += _escHtml(t.slice(last));
+      body.innerHTML = html;
+      _scrollToCurrentMark();
+    }
+    function _scrollToCurrentMark() {
+      const c = document.getElementById('extractedText');
+      const cur = c.querySelector('mark.find-hl.current');
+      if (!cur) return;
+      const top = cur.offsetTop;  // relative to #extractedText (position:relative)
+      if (top < c.scrollTop + 16 || top > c.scrollTop + c.clientHeight - 48) {
+        c.scrollTop = Math.max(0, top - c.clientHeight / 2);
+      }
+    }
 
     // ===== Find-in-text inside the dialog (Cmd/Ctrl-F) =====
-    let _findMatches = [], _findCurrent = -1;
+    function _escHtml(s) { return s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+    function _dialogFindQuery() { const i = document.getElementById('dialogFindInput'); return i ? i.value.trim() : ''; }
     function openDialogFind() {
       if (!isTextDialogOpen()) return;
       document.getElementById('dialogFind').classList.add('show');
+      document.getElementById('btnFind').classList.add('active');
       const inp = document.getElementById('dialogFindInput');
       inp.focus(); inp.select();
       dialogFindRun();
     }
     function closeDialogFind() {
-      document.getElementById('dialogFind').classList.remove('show');
-      document.getElementById('dialogFindInput').value = '';
-      const body = document.getElementById('extractedText');
-      body.textContent = body.textContent;  // collapse <mark>s back to plain text
-      _findMatches = []; _findCurrent = -1;
-      document.getElementById('dialogFindCount').textContent = '0/0';
+      const bar = document.getElementById('dialogFind');
+      if (bar) bar.classList.remove('show');
+      const fb = document.getElementById('btnFind');
+      if (fb) fb.classList.remove('active');
+      const inp = document.getElementById('dialogFindInput');
+      if (inp) inp.value = '';
+      _findCount = 0; _findCurrent = 0;
+      const cnt = document.getElementById('dialogFindCount');
+      if (cnt) cnt.textContent = '';
+      renderDialogBody();
     }
-    function _escHtml(s) { return s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
     function dialogFindRun() {
-      const q = document.getElementById('dialogFindInput').value;
-      const body = document.getElementById('extractedText');
-      const raw = body.textContent;
-      if (!q) { body.textContent = raw; _findMatches = []; _findCurrent = -1; _updateFindCount(); return; }
-      // Case-insensitive substring find (indexOf avoids regex-escaping the query).
-      const hay = raw.toLowerCase(), needle = q.toLowerCase();
-      let html = '', last = 0, idx = hay.indexOf(needle);
-      while (idx !== -1) {
-        html += _escHtml(raw.slice(last, idx)) + '<mark class="find-hl">' + _escHtml(raw.substr(idx, q.length)) + '</mark>';
-        last = idx + q.length;
-        idx = hay.indexOf(needle, last);
+      const q = _dialogFindQuery().toLowerCase();
+      const t = _dialogShownText();
+      _findCount = 0; _findCurrent = 0;
+      if (q && t) {
+        const hay = t.toLowerCase(); let i = 0;
+        while ((i = hay.indexOf(q, i)) !== -1) { _findCount++; i += q.length; }
       }
-      html += _escHtml(raw.slice(last));
-      body.innerHTML = html;
-      _findMatches = Array.prototype.slice.call(body.querySelectorAll('.find-hl'));
-      _findCurrent = _findMatches.length ? 0 : -1;
-      _highlightCurrentFind();
-      _updateFindCount();
-    }
-    function _highlightCurrentFind() {
-      _findMatches.forEach((el, i) => el.classList.toggle('current', i === _findCurrent));
-      if (_findCurrent >= 0) _findMatches[_findCurrent].scrollIntoView({block: 'center', behavior: 'smooth'});
-    }
-    function _updateFindCount() {
-      document.getElementById('dialogFindCount').textContent =
-        (_findMatches.length ? (_findCurrent + 1) : 0) + '/' + _findMatches.length;
+      _updateFindCounter();
+      renderDialogBody();
     }
     function dialogFindStep(dir) {
-      if (!_findMatches.length) return;
-      _findCurrent = (_findCurrent + dir + _findMatches.length) % _findMatches.length;
-      _highlightCurrentFind(); _updateFindCount();
+      if (_findCount === 0) return;
+      _findCurrent = (_findCurrent + dir + _findCount) % _findCount;
+      _updateFindCounter();
+      renderDialogBody();
+    }
+    function _updateFindCounter() {
+      const el = document.getElementById('dialogFindCount');
+      if (!el) return;
+      const q = _dialogFindQuery();
+      el.textContent = q ? (_findCount ? (_findCurrent + 1) + '/' + _findCount : '0/0') : '';
     }
     function dialogFindKey(e) {
       if (e.key === 'Enter') { e.preventDefault(); dialogFindStep(e.shiftKey ? -1 : 1); }
@@ -2694,42 +2769,37 @@ def timeline_v2():
     fetch('/api/config').then(r => r.json()).then(c => aiConfig = c);
     
     function toggleOCRMode() {
-      const toggle = document.getElementById('ocrToggle');
-      currentOCRMode = toggle.checked ? 'ai' : 'basic';
+      currentOCRMode = currentOCRMode === 'ai' ? 'basic' : 'ai';
       updateExtractedText();
     }
-    
+
     function showOCRMode(mode) {
       currentOCRMode = mode;
-      document.getElementById('ocrToggle').checked = (mode === 'ai');
       updateExtractedText();
     }
-    
+
     async function runAIOCR() {
       if (!currentEntry) {
         showToast('No screenshot selected', 'error');
         return;
       }
-      
-      const btn = document.getElementById('btnRunAI');
-      btn.disabled = true;
-      btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Processing...';
-      
+
+      _aiRunning = true;
+      refreshTextDialog();  // shows spinner + "Transcribing…" on the Run-AI button
+
       // Show info toast about processing time
       showToast('AI OCR is processing... This may take 10-30 seconds as the AI analyzes the entire screenshot.', 'info');
-      
+
       try {
         const configResp = await fetch('/api/config?full=true');
         const fullConfig = await configResp.json();
-        
+
         if (!fullConfig.api_key || fullConfig.api_key === '***' || fullConfig.api_key === '') {
           showToast('Please configure AI settings first', 'error');
           showAIConfig();
-          btn.disabled = false;
-          setRunAiLabel();
           return;
         }
-        
+
         const response = await fetch('/api/ai-ocr', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
@@ -2739,25 +2809,24 @@ def timeline_v2():
             api_key: fullConfig.api_key
           })
         });
-        
+
         if (!response.ok) {
           const error = await response.json();
           throw new Error(error.error || 'AI OCR failed');
         }
-        
+
         const result = await response.json();
         currentEntry.ai_text = result.text;
         currentEntry.ai_words_coords = result.words_coords;
         entriesData[currentEntry.timestamp].ai_text = result.text;
         entriesData[currentEntry.timestamp].ai_words_coords = result.words_coords;
-        
-        showOCRMode('ai');
+
+        currentOCRMode = 'ai';
         showToast('AI OCR completed successfully! ✨', 'success');
       } catch (error) {
         showToast('AI OCR error: ' + error.message, 'error');
       } finally {
-        btn.disabled = false;
-        setRunAiLabel();
+        _aiRunning = false;
         refreshTextDialog();
       }
     }
@@ -2830,12 +2899,15 @@ def timeline_v2():
     }
     
     function copyExtractedText() {
-      const text = document.getElementById('extractedText').textContent;
-      navigator.clipboard.writeText(text).then(() => {
-        showToast('Text copied to clipboard!', 'success');
-      }).catch(() => {
-        showToast('Failed to copy text', 'error');
-      });
+      const text = _dialogShownText();
+      if (!text) return;
+      navigator.clipboard.writeText(text).catch(() => showToast('Failed to copy text', 'error'));
+      const lbl = document.querySelector('#btnCopyText .copy-label');
+      if (lbl) {
+        lbl.textContent = '✓ Copied';
+        clearTimeout(_copyT);
+        _copyT = setTimeout(() => { lbl.textContent = 'Copy all'; }, 1400);
+      }
     }
     
     function copyPopupText() {
@@ -3081,10 +3153,7 @@ def timeline_v2():
     
     // Update extracted text on change
     function updateExtractedText() {
-      if (currentEntry) {
-        const text = currentOCRMode === 'ai' && currentEntry.ai_text ? currentEntry.ai_text : currentEntry.text;
-        document.getElementById('extractedText').textContent = text || 'No text available';
-      }
+      // The dialog body (states + text + find highlights) is rendered by refreshTextDialog.
       refreshTextDialog();
     }
 
