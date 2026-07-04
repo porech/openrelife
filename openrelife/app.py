@@ -1443,7 +1443,7 @@ def timeline_v2():
                <i class="bi bi-gear"></i> Settings
              </div>
              <div class="timeline-menu-item danger" onclick="enterDeleteMode()">
-               <i class="bi bi-trash"></i> Cancella
+               <i class="bi bi-trash"></i> Delete
              </div>
           </div>
         </div>
@@ -1453,10 +1453,10 @@ def timeline_v2():
                
         <div class="delete-controls" id="deleteControls" style="display: none;">
            <button class="btn-delete-confirm" id="btnConfirmDelete" onclick="confirmDelete()">
-             <i class="bi bi-trash-fill"></i> Elimina selezione
+             <i class="bi bi-trash-fill"></i> Delete selection
            </button>
            <div class="delete-info" id="deleteInfo">1 screenshot</div>
-           <button class="btn-delete-cancel" onclick="exitDeleteMode()">Annulla</button>
+           <button class="btn-delete-cancel" onclick="exitDeleteMode()">Cancel</button>
         </div>
       </div>
     </div>
