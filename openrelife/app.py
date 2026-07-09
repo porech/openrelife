@@ -926,7 +926,7 @@ def timeline_v2():
       color: #fff; font-size: 13px; font-weight: 500; line-height: 1; cursor: pointer;
       transition: all 0.15s; font-family: inherit;
     }
-    .action-btn i { font-size: 15px; line-height: 1; }
+    .action-btn i { font-size: 13px; line-height: 1; }
     .action-btn:hover { background: rgba(40,40,40,0.92); border-color: rgba(255,255,255,0.28); }
     .action-btn.ai {
       padding: 0 16px; border: none; font-weight: 600;
@@ -943,9 +943,9 @@ def timeline_v2():
     .text-dialog-scrim.show { display: block; }
     .text-dialog {
       position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
-      width: 640px; max-width: 82vw; max-height: 78vh; z-index: 2001;
+      width: 720px; max-width: 86vw; max-height: 84vh; z-index: 2001;
       background: rgba(28,28,30,0.98); backdrop-filter: blur(40px);
-      border: 1px solid rgba(255,255,255,0.12); border-radius: 18px;
+      border: 1px solid rgba(255,255,255,0.12); border-radius: 20px;
       box-shadow: 0 30px 90px rgba(0,0,0,0.7);
       display: none; flex-direction: column; overflow: hidden;
     }
