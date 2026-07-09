@@ -2056,8 +2056,15 @@ def timeline_v2():
            handled = true;
          }
 
+         // Close the settings modal if open
+         const settingsModal = document.getElementById('settingsModalOverlay');
+         if (settingsModal && settingsModal.classList.contains('show')) {
+           closeSettings();
+           handled = true;
+         }
+
          // Close AI config if open
-         const aiConfig = document.getElementById('aiConfigModal');
+         const aiConfig = document.getElementById('configModalOverlay');
          if (aiConfig && aiConfig.classList.contains('show')) {
            closeAIConfig();
            handled = true;
