@@ -943,7 +943,7 @@ def timeline_v2():
     .text-dialog-scrim.show { display: block; }
     .text-dialog {
       position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
-      width: 720px; max-width: 86vw; max-height: 84vh; z-index: 2001;
+      width: 80vw; height: 80vh; max-width: 80vw; max-height: 80vh; z-index: 2001;
       background: rgba(28,28,30,0.98); backdrop-filter: blur(40px);
       border: 1px solid rgba(255,255,255,0.12); border-radius: 20px;
       box-shadow: 0 30px 90px rgba(0,0,0,0.7);
