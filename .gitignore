@@ -47,6 +47,14 @@ yarn-error.log*
 *.swp
 *.swo
 
+# Signing / secrets (NEVER commit private keys or certificates)
+*.p12
+*.pem
+*.key
+*.cer
+*.keychain-db
+.codesign.env
+
 # Project Specific
 *.db
 logs/

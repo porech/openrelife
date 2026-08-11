@@ -1,6 +1,6 @@
 {
   "name": "openrelife",
-  "version": "1.0.0-alpha26",
+  "version": "1.0.0-alpha27",
   "description": "OpenReLife - Screen Memory for macOS",
   "main": "main.js",
   "scripts": {
@@ -29,6 +29,7 @@
   "build": {
     "appId": "com.openrelife.app",
     "productName": "OpenReLife",
+    "afterPack": "scripts/sign-selfsigned.js",
     "mac": {
       "category": "public.app-category.productivity",
       "target": [
@@ -43,6 +44,7 @@
       "darkModeSupport": true,
       "hardenedRuntime": false,
       "gatekeeperAssess": false,
+      "identity": null,
       "icon": "app-icon.png"
     },
     "extraResources": [

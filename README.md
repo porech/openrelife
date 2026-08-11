@@ -62,20 +62,14 @@ You can directly download the latest release from [GitHub releases](https://gith
 In the near future, this will (hopefully) change.
 
 The dmg file contains the .app file, that you can drag to your Applications folder.
-The app is not signed and new MacOS versions will block the opening, saying it's "damaged" and suggesting to throw it in the trash; the app is not damaged: to fix this, you need to open a terminal, write down the following command (do not run it yet):
 
-```bash
-sudo xattr -d com.apple.quarantine
-```
-now drag'n'drop the .app file (from Applications folder) in the terminal to add it's full path, then run it pressing enter.
+The app is signed with a self-signed certificate but is **not notarized by Apple** (the project is free and has no paid Apple Developer account). On first launch macOS will say it cannot verify the developer and won't open it directly — this is expected, the app is safe. To open it:
 
-for me, the full line was:
+1. Double-click OpenReLife once — macOS shows a "cannot be verified" dialog; click **Done**.
+2. Open **System Settings → Privacy & Security** and scroll down to the **Security** section.
+3. Next to the *"OpenReLife was blocked…"* message, click **Open Anyway**, then confirm with Touch ID / your password.
 
-```bash
-sudo xattr -d com.apple.quarantine /System/Volumes/Data/Applications/OpenReLife.app
-```
-
-Then, just re-open the app from the Applications folder and it will work.
+You only need to do this once. After that, the app opens normally from the Applications folder.
 
 ### Manual Installation 
 We provide a helper script to set up the environment and build the application on MacOS:
