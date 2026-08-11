@@ -65,7 +65,7 @@ function loadApp(retryCount = 0) {
       if (res.ok) {
         console.log('✅ Backend connected! Loading app...');
         mainWindow.loadURL(openRecallUrl);
-        if (windowShouldBeVisible && process.platform === 'darwin' && hasScreenAccess()) {
+        if (windowShouldBeVisible && process.platform === 'darwin') {
            mainWindow.setSimpleFullScreen(true);
         }
         if (windowShouldBeVisible) {
@@ -88,13 +88,13 @@ function loadApp(retryCount = 0) {
 function createWindow() {
   const primaryDisplay = screen.getPrimaryDisplay();
   const { width, height } = primaryDisplay.workAreaSize;
-  const hasAccess = hasScreenAccess();
 
-  // If we don't have screen access, don't cover the screen so user can see the prompt
+  // Always cover the screen (fullscreen) regardless of Screen Recording
+  // permission. Missing permissions are surfaced by in-app chips, not by
+  // shrinking the window to a small centered box.
   mainWindow = new BrowserWindow({
-    width: hasAccess ? width : 900,
-    height: hasAccess ? height : 600,
-    center: !hasAccess,
+    width: width,
+    height: height,
     show: false, // Wait for ready-to-show
     frame: false,
     transparent: false,
@@ -106,7 +106,7 @@ function createWindow() {
       enableRemoteModule: false
     },
     skipTaskbar: true,
-    simpleFullscreen: hasAccess,
+    simpleFullscreen: true,
     icon: path.join(__dirname, 'app-icon.png')
   });
 
@@ -118,25 +118,13 @@ function createWindow() {
   // Enable DevTools for debugging
   //mainWindow.webContents.openDevTools({ mode: 'detach' });
 
-  if (!hasAccess && process.platform === 'darwin') {
-      // Trigger the permission prompt
+  // On first launch without Screen Recording permission, trigger the macOS
+  // prompt once. Missing permissions are then surfaced by the in-app chips —
+  // we do NOT poll or re-request here (repeated requests caused a prompt loop).
+  if (process.platform === 'darwin' && !hasScreenAccess()) {
       desktopCapturer.getSources({ types: ['screen'] })
-          .then(() => console.log('Permission check triggered'))
-          .catch(err => console.error('Permission check error:', err));
-      
-      // Monitor for permission change
-      const checkInterval = setInterval(() => {
-          if (hasScreenAccess()) {
-              clearInterval(checkInterval);
-              if (mainWindow) {
-                  if (windowShouldBeVisible) {
-                    mainWindow.setSimpleFullScreen(true);
-                  }
-                  mainWindow.setSize(width, height);
-              }
-          }
-      }, 1000);
-      mainWindow.on('closed', () => clearInterval(checkInterval));
+          .then(() => console.log('Screen Recording permission prompt triggered'))
+          .catch(err => console.error('Permission prompt error:', err));
   }
 
   // Load splash screen immediately
@@ -149,8 +137,8 @@ function createWindow() {
 
   mainWindow.once('ready-to-show', () => {
     console.log('✅ Window ready to show');
-    // Enforce fullscreen immediately only if we actually want to show the window
-    if (windowShouldBeVisible && process.platform === 'darwin' && hasScreenAccess()) {
+    // Enforce fullscreen whenever the window should be visible, regardless of permission
+    if (windowShouldBeVisible && process.platform === 'darwin') {
         mainWindow.setSimpleFullScreen(true);
         mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
     }
@@ -208,16 +196,8 @@ function showWindow() {
   
   if (mainWindow) {
     mainWindow.webContents.send('reset-ui');
-    if (hasScreenAccess()) {
-        mainWindow.setSimpleFullScreen(true);
-    } else {
-        mainWindow.setSimpleFullScreen(false);
-        // Maybe ensure reasonably sized if not fullscreen?
-        if (mainWindow.getBounds().width < 100) {
-             mainWindow.setSize(900, 600);
-             mainWindow.center();
-        }
-    }
+    // Always fullscreen; missing permissions are shown via in-app chips
+    mainWindow.setSimpleFullScreen(true);
     mainWindow.show();
     mainWindow.focus();
   }
@@ -756,6 +736,14 @@ app.whenReady().then(async () => {
   ipcMain.on('quit-app', () => {
     app.isQuitting = true;
     app.quit();
+  });
+
+  // Accessibility is checked HERE (the main process = OpenReLife.app), not in
+  // the Python backend: the grant is bound to the app's identity, and
+  // AXIsProcessTrusted() from the backend's child process does not reflect it.
+  ipcMain.handle('is-accessibility-trusted', () => {
+    if (process.platform !== 'darwin') return true;
+    return systemPreferences.isTrustedAccessibilityClient(false); // false = no prompt
   });
 
   console.log('='.repeat(50));

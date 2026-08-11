@@ -5,7 +5,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onOpenSettings: (callback) => ipcRenderer.on('open-settings', (_event, value) => callback(value)),
   onUpdateStatus: (callback) => ipcRenderer.on('update-status', (_event, value) => callback(value)),
   hideWindow: () => ipcRenderer.send('hide-window'),
-  quitApp: () => ipcRenderer.send('quit-app')
+  quitApp: () => ipcRenderer.send('quit-app'),
+  isAccessibilityTrusted: () => ipcRenderer.invoke('is-accessibility-trusted')
 });
 
 window.addEventListener('DOMContentLoaded', () => {

@@ -19,6 +19,7 @@ from openrelife.utils import (
     is_user_active,
     is_browser_incognito,
     is_self_capture,
+    has_screen_permission,
 )
 
 # File logger for capture/OCR diagnostics
@@ -241,11 +242,15 @@ def record_screenshots_thread():
     _logger.info("Capture thread started")
     cycle_count = 0
     saved_count = 0
+    perm_warned = False  # log the "waiting for Screen Recording" state only once
 
     # Keep only downscaled thumbnails for comparison (~270p instead of 4K)
     try:
-        last_thumbs = [_downscale_for_comparison(s) for s in take_screenshots()]
-        _logger.info(f"Initial screenshots taken, {len(last_thumbs)} monitor(s)")
+        if has_screen_permission():
+            last_thumbs = [_downscale_for_comparison(s) for s in take_screenshots()]
+            _logger.info(f"Initial screenshots taken, {len(last_thumbs)} monitor(s)")
+        else:
+            last_thumbs = None
     except Exception as e:
         _logger.error(f"Failed to take initial screenshots: {e}")
         last_thumbs = None
@@ -253,6 +258,19 @@ def record_screenshots_thread():
     while True:
         try:
             cycle_count += 1
+
+            # macOS Screen Recording preflight: if the permission is missing,
+            # never call `screencapture` — it would re-trigger the OS prompt on
+            # every cycle. Pause capture and poll quietly until it is granted.
+            if not has_screen_permission():
+                if not perm_warned:
+                    _logger.warning("Screen Recording permission missing — pausing capture until granted")
+                    perm_warned = True
+                time.sleep(2)
+                continue
+            if perm_warned:
+                _logger.info("Screen Recording permission granted — resuming capture")
+                perm_warned = False
 
             if is_recording_paused:
                 if cycle_count % 60 == 0:

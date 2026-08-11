@@ -31,7 +31,7 @@ from openrelife.screenshot import (
     ocr_one_frame,
 )
 from openrelife.apple_vision_ocr import is_apple_vision_available
-from openrelife.utils import human_readable_time, timestamp_to_human_readable
+from openrelife.utils import human_readable_time, timestamp_to_human_readable, has_screen_permission, has_accessibility_permission
 from openrelife.ai_ocr import get_ai_provider
 
 app = Flask(__name__)
@@ -1316,9 +1316,33 @@ def timeline_v2():
       from { opacity: 0; transform: scale(0.5) translateY(10px); }
       to { opacity: 1; transform: scale(1) translateY(0); }
     }
+    /* Permission chips (top-right, below the action cluster) */
+    #perm-chips { position: fixed; top: 76px; right: 24px; z-index: 1400; display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
+    .perm-chip { display: inline-flex; align-items: center; gap: 6px; background: #dc3545; color: #fff; border: none; border-radius: 20px; padding: 7px 14px; font-size: 13px; font-weight: 600; cursor: pointer; box-shadow: 0 2px 10px rgba(0,0,0,0.45); }
+    .perm-chip:hover { background: #c82333; }
+    .perm-chip i { font-size: 15px; }
   </style>
 </head>
 <body>
+  <div id="perm-chips"></div>
+  <div class="settings-modal-overlay" id="permModalOverlay" onclick="if(event.target===this) closePermModal()">
+    <div class="settings-modal" style="max-width: 460px;">
+      <div class="settings-modal-header">
+        <h2 id="permModalTitle">Permission needed</h2>
+        <button class="close-btn" onclick="closePermModal()">&times;</button>
+      </div>
+      <div class="settings-modal-body">
+        <p id="permModalDesc" style="margin-bottom: 14px; color: rgba(255,255,255,0.85);"></p>
+        <div style="background: rgba(255,193,7,0.1); border-left: 4px solid #ffc107; padding: 12px; border-radius: 8px; font-size: 13px; color: rgba(255,255,255,0.85);">
+          <i class="bi bi-exclamation-triangle-fill" style="margin-right: 6px; color: #ffc107;"></i>
+          If OpenReLife is already listed and enabled there, remove it (&ndash;) and add it again &mdash; after an update macOS may require this.
+        </div>
+      </div>
+      <div class="settings-modal-footer">
+        <button class="btn btn-primary" id="permModalOpenBtn">Open Settings &rsaquo;</button>
+      </div>
+    </div>
+  </div>
   <div class="fullscreen-container">
     <!-- Action cluster (top-right) -->
     <div class="action-cluster">
@@ -3195,6 +3219,62 @@ def timeline_v2():
     // Init
     updateDisplay(timestamps[0]);
     updateExtractedText();
+
+    // ---- Permission chips (macOS) ----
+    const PERM_META = {
+      screen: { label: 'Screen Recording', icon: 'bi-display',
+                desc: 'OpenReLife needs Screen Recording to capture your screen. Without it, nothing is recorded.' },
+      accessibility: { label: 'Accessibility', icon: 'bi-universal-access',
+                desc: 'OpenReLife uses Accessibility to read the active window title, which makes search results richer.' },
+    };
+    function openPermModal(which) {
+      const meta = PERM_META[which];
+      document.getElementById('permModalTitle').textContent = meta.label + ' needed';
+      document.getElementById('permModalDesc').textContent = meta.desc;
+      document.getElementById('permModalOpenBtn').onclick = function() {
+        fetch('/api/open-settings', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ which: which }) });
+        closePermModal();
+        // Hide our fullscreen always-on-top overlay so System Settings comes to
+        // the front — otherwise it opens behind OpenReLife and the button looks
+        // like it did nothing.
+        if (window.electronAPI && window.electronAPI.hideWindow) window.electronAPI.hideWindow();
+      };
+      document.getElementById('permModalOverlay').classList.add('show');
+    }
+    function closePermModal() {
+      document.getElementById('permModalOverlay').classList.remove('show');
+    }
+    function renderPermChips(perms) {
+      const box = document.getElementById('perm-chips');
+      const missing = Object.keys(PERM_META).filter(k => perms[k] === false);
+      const want = missing.join(',');
+      if (box.dataset.state === want) return;  // no change → don't re-render (avoids flicker)
+      box.dataset.state = want;
+      box.innerHTML = '';
+      missing.forEach(k => {
+        const meta = PERM_META[k];
+        const chip = document.createElement('button');
+        chip.className = 'perm-chip';
+        chip.innerHTML = '<i class="bi ' + meta.icon + '"></i> ' + meta.label;
+        chip.title = meta.label + ' permission missing — click to fix';
+        chip.onclick = () => openPermModal(k);
+        box.appendChild(chip);
+      });
+    }
+    async function pollPermissions() {
+      let perms = { screen: true, accessibility: true };
+      try { perms = await fetch('/api/permissions').then(r => r.json()); } catch (e) {}
+      // Accessibility is authoritative from the main process (the identity the
+      // user actually grants). The Python backend's AXIsProcessTrusted() runs in
+      // a child process and does not reflect the grant, so override it here.
+      if (window.electronAPI && window.electronAPI.isAccessibilityTrusted) {
+        try { perms.accessibility = await window.electronAPI.isAccessibilityTrusted(); } catch (e) {}
+      }
+      renderPermChips(perms);
+    }
+    pollPermissions();
+    setInterval(pollPermissions, 4000);
   </script>
 </body>
 </html>
@@ -3332,6 +3412,33 @@ def api_sync():
 @app.route("/api/recording-status", methods=["GET"])
 def get_recording_status():
     return jsonify({"paused": get_recording_paused()})
+
+
+@app.route("/api/permissions", methods=["GET"])
+def api_permissions():
+    """Report macOS permission status (checked without prompting)."""
+    return jsonify({
+        "screen": has_screen_permission(),
+        "accessibility": has_accessibility_permission(),
+    })
+
+
+_SETTINGS_PANES = {
+    "screen": "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+    "accessibility": "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+}
+
+
+@app.route("/api/open-settings", methods=["POST"])
+def api_open_settings():
+    """Open the System Settings pane for a given permission."""
+    import subprocess
+    which = (request.get_json(silent=True) or {}).get("which")
+    url = _SETTINGS_PANES.get(which)
+    if not url:
+        return jsonify({"error": "unknown pane"}), 400
+    subprocess.run(["open", url], check=False)
+    return jsonify({"ok": True})
 
 
 @app.route("/api/entry-coords/<int:timestamp>")

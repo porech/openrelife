@@ -143,6 +143,36 @@ def get_active_window_title_osx() -> str:
     return ""  # Default if no specific window is found
 
 
+def has_screen_permission() -> bool:
+    """True if the app can capture the screen (macOS Screen Recording).
+
+    Uses CGPreflightScreenCaptureAccess, which checks the status WITHOUT
+    prompting. Non-macOS platforms and detection errors default to True so
+    capture is never blocked by a false negative.
+    """
+    if sys.platform != "darwin":
+        return True
+    try:
+        import Quartz
+        return bool(Quartz.CGPreflightScreenCaptureAccess())
+    except Exception:
+        return True
+
+
+def has_accessibility_permission() -> bool:
+    """True if the app has macOS Accessibility access (AXIsProcessTrusted).
+
+    Checks without prompting. Non-macOS and detection errors default to True.
+    """
+    if sys.platform != "darwin":
+        return True
+    try:
+        from ApplicationServices import AXIsProcessTrusted
+        return bool(AXIsProcessTrusted())
+    except Exception:
+        return True
+
+
 def get_ax_window_title_osx() -> str:
     """Gets the full AXTitle of the active window on macOS using Accessibility API.
 
