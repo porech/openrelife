@@ -1,6 +1,6 @@
 [project]
 name = "openrelife"
-version = "1.0.0-alpha26"
+version = "1.0.0-alpha27"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
