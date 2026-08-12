@@ -17,6 +17,11 @@ Rules:
 - Compare with recent commits to match the style
 - Scope is optional but recommended: `feat(settings): add incognito browser configuration`
 
+## Versioning
+- Active line: `1.1.x`. Increment sequentially for each release: `1.1.2`, `1.1.3`, … — plain patch numbers, no `-alpha`/prerelease suffix.
+- Never revert to `1.0.0-alpha*`.
+- Bump the version in both `pyproject.toml` and `electron-app/package.json`.
+
 ## Code Style
 - Python codebase
 - Follow existing patterns in the project
