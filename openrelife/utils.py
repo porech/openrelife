@@ -2,6 +2,7 @@ import sys
 import datetime
 import re
 import unicodedata
+from functools import wraps
 
 # Platform-specific imports with error handling
 try:
@@ -40,6 +41,21 @@ try:
     import subprocess
 except ImportError:
     subprocess = None  # Should always be available in standard lib
+
+
+def _with_macos_autorelease_pool(function):
+    """Bound native temporaries in capture and HTTP worker threads."""
+    @wraps(function)
+    def call(*args, **kwargs):
+        if sys.platform != "darwin":
+            return function(*args, **kwargs)
+        try:
+            import objc
+        except ImportError:
+            return function(*args, **kwargs)
+        with objc.autorelease_pool():
+            return function(*args, **kwargs)
+    return call
 
 
 def human_readable_time(timestamp: int) -> str:
@@ -89,6 +105,7 @@ def timestamp_to_human_readable(timestamp: int) -> str:
         return ""
 
 
+@_with_macos_autorelease_pool
 def get_active_app_name_osx() -> str:
     """Gets the name of the active application on macOS.
 
@@ -101,11 +118,12 @@ def get_active_app_name_osx() -> str:
         return ""  # Indicate unavailability if import failed
     try:
         active_app = NSWorkspace.sharedWorkspace().activeApplication()
-        return active_app.get("NSApplicationName", "")
+        return str(active_app.get("NSApplicationName", ""))
     except:
         return ""
 
 
+@_with_macos_autorelease_pool
 def get_active_window_title_osx() -> str:
     """Gets the title of the active window on macOS.
 
@@ -134,7 +152,7 @@ def get_active_window_title_osx() -> str:
                 if "kCGWindowName" in window:
                     title = window.get("kCGWindowName", "")
                     if title:  # Return the first non-empty title found
-                        return title
+                        return str(title)
         # Fallback if no suitable window title found for the active app
         return ""
     except Exception as e:
@@ -173,6 +191,7 @@ def has_accessibility_permission() -> bool:
         return True
 
 
+@_with_macos_autorelease_pool
 def get_ax_window_title_osx() -> str:
     """Gets the full AXTitle of the active window on macOS using Accessibility API.
 
@@ -628,6 +647,7 @@ def _is_incognito_title(title: str) -> bool:
     return False
 
 
+@_with_macos_autorelease_pool
 def _get_all_visible_browser_windows_osx() -> list:
     """Get AXTitle of all visible browser windows on macOS.
 
@@ -677,7 +697,7 @@ def _get_all_visible_browser_windows_osx() -> list:
                             window, "AXTitle", None
                         )
                         if err == 0 and title:
-                            result.append((app_name, str(title)))
+                            result.append((str(app_name), str(title)))
             except Exception:
                 pass  # Skip this app on error
 

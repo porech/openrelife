@@ -29,12 +29,32 @@ from openrelife.screenshot import (
     get_use_apple_vision,
     set_use_apple_vision,
     ocr_one_frame,
+    get_ocr_safety_status,
+    reset_ocr_safety,
 )
+from openrelife.ocr_safety import OcrSafetyError
+from openrelife.retention import RetentionManager, validate_days
 from openrelife.apple_vision_ocr import is_apple_vision_available
 from openrelife.utils import human_readable_time, timestamp_to_human_readable, has_screen_permission, has_accessibility_permission
 from openrelife.ai_ocr import get_ai_provider
 
 app = Flask(__name__)
+retention_manager = RetentionManager(appdata_folder)
+
+
+def _save_settings_atomically(settings_path, settings):
+    import json
+    import tempfile
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', dir=os.path.dirname(settings_path),
+                                         prefix='.settings-', delete=False) as output:
+            temporary = output.name
+            json.dump(settings, output, indent=4)
+        os.replace(temporary, settings_path)
+    finally:
+        if temporary and os.path.exists(temporary):
+            os.unlink(temporary)
 
 def load_settings():
     settings_path = os.path.join(appdata_folder, "settings.json")
@@ -1502,7 +1522,7 @@ def timeline_v2():
             <option value="365">1 Year</option>
           </select>
           <small class="form-text text-muted" style="margin-top: 8px;">
-            Screenshots older than this period will be automatically deleted daily.
+            Expired screenshots and search data are removed on startup, when this setting changes, and daily.
             <br><span style="color: #ffc107;"><i class="bi bi-exclamation-triangle"></i> Changing this will permanently delete old data.</span>
           </small>
         </div>
@@ -1552,7 +1572,7 @@ def timeline_v2():
           <label style="display:block; font-weight:600; margin-bottom:6px;">OCR Engine</label>
           <label style="display:flex; align-items:center; gap:8px;">
             <input type="checkbox" id="useAppleVisionCheckbox">
-            <span>Use Apple Vision (recommended, ~30× faster)</span>
+            <span>Use Apple Vision (native text recognition)</span>
           </label>
           <p style="margin-top:6px; color:#666; font-size:12px;">
             Native macOS text recognition. Falls back to doctr automatically if a frame fails.
@@ -1575,6 +1595,10 @@ def timeline_v2():
             <option value="eco">Eco — power-saving: single thread, tiny batches, only when fully charged or idle</option>
             <option value="disabled">Disabled — never run OCR (screenshots still captured, text not searchable)</option>
           </select>
+          <div id="ocrSafetyWarning" role="status" style="display:none; margin-top:8px; color:#ffc107;">
+            <span id="ocrSafetyReason"></span>
+            <button id="ocrSafetyResume" type="button" class="btn btn-sm btn-outline-warning" onclick="resumeOcrSafety()">Resume text recognition</button>
+          </div>
           <small class="form-text text-muted" style="margin-top: 8px;">
             <strong>Aggressive:</strong> fastest text availability, highest CPU usage.<br>
             <strong>Smart:</strong> small batches on battery, medium on charge, full recovery when idle+charging.<br>
@@ -2985,6 +3009,14 @@ def timeline_v2():
             .then(r => r.json())
             .then(data => {
                 document.getElementById('ocrComputeModeSelect').value = data.ocr_compute_mode;
+                const safety = data.ocr_safety || {};
+                const lowDisk = safety.disk_free_bytes < safety.minimum_free_bytes;
+                document.getElementById('ocrSafetyWarning').style.display = safety.paused || lowDisk ? 'block' : 'none';
+                document.getElementById('ocrSafetyReason').textContent = lowDisk
+                    ? 'Text recognition is paused until at least 10 GiB of disk space is available.'
+                    : (safety.reason || '');
+                document.getElementById('ocrSafetyResume').style.display = safety.paused ? 'inline-block' : 'none';
+                document.getElementById('ocrSafetyResume').disabled = lowDisk;
             });
         // Load skip incognito
         fetch('/api/settings/skip_incognito')
@@ -3025,6 +3057,22 @@ def timeline_v2():
 
     function closeSettings() {
         document.getElementById('settingsModalOverlay').classList.remove('show');
+    }
+
+    function resumeOcrSafety() {
+        const mode = document.getElementById('ocrComputeModeSelect').value;
+        if (mode === 'disabled') {
+            showToast('Choose an enabled processing mode before resuming.', 'warning');
+            return;
+        }
+        fetch('/api/settings/ocr-compute-mode', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ocr_compute_mode: mode})
+        }).then(r => r.json()).then(data => {
+            if (!data.success) throw new Error(data.error || 'Resume failed');
+            document.getElementById('ocrSafetyWarning').style.display = 'none';
+            showToast('Text recognition resumed.', 'success');
+        }).catch(() => showToast('Could not resume text recognition.', 'error'));
     }
 
     function saveSettings() {
@@ -3312,6 +3360,8 @@ def api_ocr_now(timestamp):
                         'text': entry.text, 'words_coords': entry.words_coords})
     try:
         result = ocr_one_frame(timestamp, use_apple_vision=get_use_apple_vision())
+    except OcrSafetyError as e:
+        return jsonify({'success': False, 'error': str(e)}), 503
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
     if result is None:
@@ -4356,10 +4406,14 @@ def api_settings_retention():
                         days = settings.get('retention_days', -1)
             except Exception:
                 pass
-        return jsonify({'days': str(days)})
+        return jsonify({'days': str(days), 'cleanup': retention_manager.status()})
     else:
         data = request.json
         days = data.get('days', -1)
+        try:
+            days = validate_days(days)
+        except ValueError as error:
+            return jsonify({'error': str(error)}), 400
         settings = {}
         if os.path.exists(settings_path):
             try:
@@ -4370,8 +4424,8 @@ def api_settings_retention():
             except Exception:
                 pass
         settings['retention_days'] = int(days)
-        with open(settings_path, 'w') as f:
-            json.dump(settings, f)
+        _save_settings_atomically(settings_path, settings)
+        retention_manager.request_cleanup()
         return jsonify({'success': True})
 
 
@@ -4431,11 +4485,14 @@ def api_settings_ocr_compute_mode():
     settings_path = os.path.join(appdata_folder, "settings.json")
     import json
     if request.method == "GET":
-        return jsonify({'ocr_compute_mode': get_ocr_compute_mode()})
+        return jsonify({'ocr_compute_mode': get_ocr_compute_mode(),
+                        'ocr_safety': get_ocr_safety_status()})
     else:
         data = request.json
         mode = data.get('ocr_compute_mode', 'smart')
         set_ocr_compute_mode(mode)
+        if mode in ('smart', 'aggressive', 'on_charge_only', 'eco'):
+            reset_ocr_safety()
         settings = {}
         if os.path.exists(settings_path):
             try:
@@ -4603,6 +4660,11 @@ def api_update_settings():
     
     data = request.json
     restart_required = False
+    if 'retention_days' in data:
+        try:
+            retention_days = validate_days(data['retention_days'])
+        except ValueError as error:
+            return jsonify({'error': str(error)}), 400
     
     # Load current settings
     settings = {}
@@ -4623,7 +4685,7 @@ def api_update_settings():
         
     # Update Retention
     if 'retention_days' in data:
-        settings['retention_days'] = int(data['retention_days'])
+        settings['retention_days'] = retention_days
         
     # Update Quality
     if 'quality' in data:
@@ -4668,11 +4730,12 @@ def api_update_settings():
 
     # Save atomically
     try:
-        with open(settings_path, 'w') as f:
-            json.dump(settings, f, indent=4)
+        _save_settings_atomically(settings_path, settings)
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
+    if 'retention_days' in data:
+        retention_manager.request_cleanup()
     return jsonify({'success': True, 'restart_required': restart_required})
 
 
@@ -4706,6 +4769,7 @@ if __name__ == "__main__":
     
     create_db()
     load_settings()
+    retention_manager.start()
 
     print(f"Appdata folder: {appdata_folder}")
     print(f"🚀 Starting OpenReLife on port {configured_port} (Production Mode)...")

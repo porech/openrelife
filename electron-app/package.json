@@ -1,6 +1,6 @@
 {
   "name": "openrelife",
-  "version": "1.1.1",
+  "version": "1.1.4",
   "description": "OpenReLife - Screen Memory for macOS",
   "main": "main.js",
   "scripts": {
@@ -58,7 +58,8 @@
       },
       {
         "from": "../openrelife",
-        "to": "openrelife"
+        "to": "openrelife",
+        "filter": ["**/*", "!**/__pycache__/**", "!**/*.pyc"]
       },
       {
         "from": "../pyproject.toml",

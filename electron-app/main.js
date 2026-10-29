@@ -570,6 +570,8 @@ async function startBackend() {
   const env = { 
     ...process.env, 
     PYTHONUNBUFFERED: '1',
+    // Keep Python from modifying signed resources inside the application bundle.
+    PYTHONDONTWRITEBYTECODE: '1',
     VIRTUAL_ENV: venvPath,
     PATH: `${path.join(venvPath, 'bin')}:${process.env.PATH}`,
     // Ensure we don't pick up other envs

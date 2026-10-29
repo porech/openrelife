@@ -3,6 +3,7 @@ import logging.handlers
 import os
 import queue
 import time
+import threading
 from typing import List, Tuple
 
 import mss
@@ -13,6 +14,7 @@ from openrelife.config import appdata_folder, screenshots_path, args
 from openrelife.database import insert_entry_stub, update_entry_ocr, get_pending_ocr_timestamps, get_pending_ocr_timestamps_in_set
 from openrelife.nlp import get_embedding
 from openrelife.ocr import extract_text_from_image
+from openrelife.ocr_safety import OcrSafetyError, OcrSafetyGuard
 from openrelife.utils import (
     get_active_app_name,
     get_active_window_title,
@@ -34,6 +36,16 @@ _logger.addHandler(_file_handler)
 
 # Queue for pending OCR work: timestamps only (8 bytes each, no memory concern)
 _ocr_queue: queue.Queue = queue.Queue(maxsize=50000)
+_ocr_guard = OcrSafetyGuard(appdata_folder)
+_ocr_run_lock = threading.Lock()
+
+
+def get_ocr_safety_status():
+    return _ocr_guard.status()
+
+
+def reset_ocr_safety():
+    _ocr_guard.reset()
 
 
 def mean_structured_similarity_index(
@@ -243,10 +255,11 @@ def record_screenshots_thread():
     cycle_count = 0
     saved_count = 0
     perm_warned = False  # log the "waiting for Screen Recording" state only once
+    disk_warned = False
 
     # Keep only downscaled thumbnails for comparison (~270p instead of 4K)
     try:
-        if has_screen_permission():
+        if has_screen_permission() and _ocr_guard.capture_available():
             last_thumbs = [_downscale_for_comparison(s) for s in take_screenshots()]
             _logger.info(f"Initial screenshots taken, {len(last_thumbs)} monitor(s)")
         else:
@@ -307,6 +320,13 @@ def record_screenshots_thread():
                 time.sleep(3)
                 continue
 
+            if not _ocr_guard.capture_available():
+                if not disk_warned:
+                    _logger.warning("Capture paused: less than 2 GiB of disk space remains")
+                    disk_warned = True
+                time.sleep(30)
+                continue
+            disk_warned = False
             screenshots = take_screenshots()
 
             if last_thumbs is None or len(last_thumbs) != len(screenshots):
@@ -446,6 +466,18 @@ def ocr_one_frame(ts, use_apple_vision=False):
     Lightweight enough to call inline on Apple Vision (no torch); doctr is only
     lazy-loaded as a fallback when Vision is unavailable.
     """
+    if not os.path.exists(os.path.join(screenshots_path, f"{ts}.webp")):
+        return None
+    if not _ocr_run_lock.acquire(blocking=False):
+        raise OcrSafetyError("Text recognition is already running. Try again shortly.")
+    try:
+        _ocr_guard.ensure_available()
+        return _ocr_one_frame(ts, use_apple_vision)
+    finally:
+        _ocr_run_lock.release()
+
+
+def _ocr_one_frame(ts, use_apple_vision=False):
     image_path = os.path.join(screenshots_path, f"{ts}.webp")
     if not os.path.exists(image_path):
         return None
@@ -479,8 +511,51 @@ def _process_ocr_batch(timestamps_list, num_threads=4, use_apple_vision=False):
     for ts in timestamps_list:
         try:
             ocr_one_frame(ts, use_apple_vision=use_apple_vision)
+        except OcrSafetyError as e:
+            print(f"OCR worker paused: {e}")
+            break
         except Exception as e:
             print(f"OCR worker error for {ts}: {e}")
+
+
+def _run_ocr_subprocess(batch, threads, use_apple_vision, timeout):
+    """Serialize parent requests and bound each batch process lifetime."""
+    from multiprocessing import get_context
+    if not _ocr_run_lock.acquire(blocking=False):
+        raise OcrSafetyError("Text recognition is already running. Try again shortly.")
+    proc = None
+    try:
+        _ocr_guard.ensure_available()
+        # Never inherit a held threading lock or native framework state via fork.
+        proc = get_context("spawn").Process(
+            target=_process_ocr_batch, args=(batch, threads, use_apple_vision))
+        proc.start()
+        proc.join(timeout=timeout)
+        hung = proc.is_alive()
+        if hung:
+            _logger.error(f"OCR subprocess hung after {timeout}s, killing it")
+            proc.kill()
+            proc.join()
+        exitcode = proc.exitcode
+        if hung or exitcode != 0:
+            state = _ocr_guard.record_failure(f"timeout={hung}, exitcode={exitcode}")
+            if state.get("paused"):
+                _logger.error(state["reason"])
+        else:
+            _ocr_guard.record_success()
+        return hung, exitcode
+    except OcrSafetyError:
+        raise
+    except Exception as error:
+        _ocr_guard.record_failure(f"Worker launch/collection failed: {type(error).__name__}")
+        raise OcrSafetyError("Text recognition worker failed. Processing has been deferred.") from error
+    finally:
+        if proc is not None:
+            if proc.is_alive():
+                proc.kill()
+                proc.join()
+            proc.close()
+        _ocr_run_lock.release()
 
 
 def _get_batch_params(pending_count: int) -> tuple:
@@ -552,7 +627,6 @@ def ocr_worker_thread():
     - smart (default): adapts to battery/AC/idle state
     - on_charge_only: skips OCR on battery, recovers when plugged in
     """
-    from multiprocessing import Process
     _logger.info("OCR worker thread started")
 
     # On startup, re-queue any orphaned stub entries (text='') from previous sessions
@@ -595,7 +669,8 @@ def ocr_worker_thread():
                     _ocr_queue.put_nowait(ts)
                 except queue.Full:
                     break
-            _ocr_queue.task_done()  # for first_ts
+            for _ in pending:
+                _ocr_queue.task_done()
             continue
 
         batch = pending[:max_batch]
@@ -607,6 +682,8 @@ def ocr_worker_thread():
                 _ocr_queue.put_nowait(ts)
             except queue.Full:
                 break
+        for _ in overflow:
+            _ocr_queue.task_done()  # Replacements own their new queue task.
 
         # Process batch in a subprocess — all memory freed on exit
         # Timeout: 10s per frame max, kill if hung
@@ -615,16 +692,21 @@ def ocr_worker_thread():
         engine = "vision" if use_av else "doctr"
         _logger.info(f"OCR subprocess starting: {len(batch)} frames, {threads} threads, engine={engine} (timeout={batch_timeout}s)")
         batch_start = time.time()
-        proc = Process(target=_process_ocr_batch, args=(batch, threads, use_av))
-        proc.start()
-        proc.join(timeout=batch_timeout)
-        was_hung = proc.is_alive()
-        if was_hung:
-            _logger.error(f"OCR subprocess hung after {batch_timeout}s, killing it")
-            proc.kill()
-            proc.join()
+        try:
+            was_hung, exitcode = _run_ocr_subprocess(batch, threads, use_av, batch_timeout)
+        except OcrSafetyError as e:
+            _logger.warning(f"OCR batch deferred: {e}")
+            for ts in batch:
+                try:
+                    _ocr_queue.put_nowait(ts)
+                except queue.Full:
+                    break
+            for _ in batch:
+                _ocr_queue.task_done()
+            time.sleep(60)
+            continue
         batch_duration = time.time() - batch_start
-        _logger.info(f"OCR subprocess done: {len(batch)} frames in {batch_duration:.0f}s ({batch_duration/len(batch):.1f}s/frame), overflow={len(overflow)}, hung={was_hung}")
+        _logger.info(f"OCR subprocess done: {len(batch)} frames in {batch_duration:.0f}s ({batch_duration/len(batch):.1f}s/frame), overflow={len(overflow)}, hung={was_hung}, exitcode={exitcode}")
 
         # Mark all batch tasks as done in the queue
         for _ in batch:

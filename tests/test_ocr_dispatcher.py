@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 def test_doctr_predictor_is_not_loaded_at_import_time():
     """Importing openrelife.ocr must NOT trigger doctr model loading."""
     import sys
-    for mod in [m for m in list(sys.modules) if m.startswith("openrelife.ocr")]:
+    for mod in [m for m in list(sys.modules) if m == "openrelife.ocr"]:
         del sys.modules[mod]
     with patch("doctr.models.ocr_predictor") as mock_predictor:
         import openrelife.ocr  # noqa: F401
@@ -15,7 +15,7 @@ def test_doctr_predictor_is_not_loaded_at_import_time():
 def test_extract_text_uses_doctr_when_vision_disabled():
     """Dispatcher routes to doctr currently (no Vision wiring yet)."""
     import sys
-    for mod in [m for m in list(sys.modules) if m.startswith("openrelife.ocr")]:
+    for mod in [m for m in list(sys.modules) if m == "openrelife.ocr"]:
         del sys.modules[mod]
     import openrelife.ocr as ocr_mod
     fake_predictor = MagicMock()
@@ -32,7 +32,7 @@ def test_extract_text_uses_doctr_when_vision_disabled():
 
 def test_dispatcher_calls_vision_when_enabled_and_available():
     import sys
-    for mod in [m for m in list(sys.modules) if m.startswith("openrelife.ocr")]:
+    for mod in [m for m in list(sys.modules) if m == "openrelife.ocr"]:
         del sys.modules[mod]
     import openrelife.ocr as ocr_mod
     from unittest.mock import MagicMock, patch
@@ -53,7 +53,7 @@ def test_dispatcher_calls_vision_when_enabled_and_available():
 
 def test_dispatcher_falls_back_to_doctr_on_vision_exception():
     import sys
-    for mod in [m for m in list(sys.modules) if m.startswith("openrelife.ocr")]:
+    for mod in [m for m in list(sys.modules) if m == "openrelife.ocr"]:
         del sys.modules[mod]
     import openrelife.ocr as ocr_mod
     from unittest.mock import MagicMock, patch
@@ -74,7 +74,7 @@ def test_dispatcher_falls_back_to_doctr_on_vision_exception():
 
 def test_dispatcher_uses_doctr_when_setting_disabled():
     import sys
-    for mod in [m for m in list(sys.modules) if m.startswith("openrelife.ocr")]:
+    for mod in [m for m in list(sys.modules) if m == "openrelife.ocr"]:
         del sys.modules[mod]
     import openrelife.ocr as ocr_mod
     from unittest.mock import MagicMock, patch
@@ -93,7 +93,7 @@ def test_dispatcher_uses_doctr_when_setting_disabled():
 
 def test_dispatcher_uses_doctr_when_vision_unavailable():
     import sys
-    for mod in [m for m in list(sys.modules) if m.startswith("openrelife.ocr")]:
+    for mod in [m for m in list(sys.modules) if m == "openrelife.ocr"]:
         del sys.modules[mod]
     import openrelife.ocr as ocr_mod
     from unittest.mock import MagicMock, patch

@@ -3,6 +3,19 @@ import numpy as np
 from openrelife.nlp import cosine_similarity
 
 
+def test_macos_embedding_model_avoids_persistent_mps_graphs(monkeypatch):
+    from unittest.mock import Mock
+    from openrelife import nlp
+
+    factory = Mock()
+    monkeypatch.setattr(nlp, "_model_cache", None)
+    monkeypatch.setattr(nlp, "SentenceTransformer", factory)
+    monkeypatch.setattr(nlp.sys, "platform", "darwin")
+    assert nlp.get_model() is factory.return_value
+    assert nlp.get_model() is factory.return_value
+    factory.assert_called_once_with(nlp.MODEL_NAME, device="cpu")
+
+
 def test_cosine_similarity_identical_vectors():
     a = np.array([1, 0, 0])
     b = np.array([1, 0, 0])

@@ -198,6 +198,38 @@ def extract_text_with_vision(image: np.ndarray) -> Tuple[str, List[Dict]]:
     Returns (text, words_with_coords) matching the doctr backend's schema.
     Raises RuntimeError on Vision failure (caller catches and falls back to doctr).
     """
+    import objc
+
+    # Capture and HTTP workers do not run a Cocoa event loop. Drain native
+    # temporaries after every image, including failures, on the calling thread.
+    with objc.autorelease_pool():
+        return _extract_text_with_vision(image)
+
+
+def _configure_cpu_only(request) -> None:
+    """Avoid ANE model compilation, including in short-lived OCR workers."""
+    if hasattr(request, "supportedComputeStageDevicesAndReturnError_"):
+        import CoreML
+        stages, error = request.supportedComputeStageDevicesAndReturnError_(None)
+        if error is not None or not stages:
+            raise RuntimeError("Cannot determine CPU devices for Vision OCR")
+        for stage, devices in stages.items():
+            cpu = next((device for device in devices
+                        if isinstance(device, CoreML.MLCPUComputeDevice)), None)
+            if cpu is None:
+                raise RuntimeError(f"Vision OCR has no CPU device for {stage}")
+            request.setComputeDevice_forComputeStage_(cpu, stage)
+            selected = request.computeDeviceForComputeStage_(stage)
+            if not isinstance(selected, CoreML.MLCPUComputeDevice):
+                raise RuntimeError(f"Vision OCR did not accept the CPU device for {stage}")
+    else:
+        # macOS 13 predates per-stage device selection.
+        request.setUsesCPUOnly_(True)
+
+
+def _extract_text_with_vision(image: np.ndarray) -> Tuple[str, List[Dict]]:
+    # Keep native locals in this inner frame so their Python references are
+    # dropped before the caller drains the pool. Only Python values escape.
     import Vision
     cg_image, ns_data = _np_image_to_cgimage(image)
     # `ns_data` MUST remain in scope until performRequests_error_ returns.
@@ -206,6 +238,7 @@ def extract_text_with_vision(image: np.ndarray) -> Tuple[str, List[Dict]]:
     request.setRecognitionLevel_(Vision.VNRequestTextRecognitionLevelAccurate)
     request.setUsesLanguageCorrection_(True)
     request.setRecognitionLanguages_(_system_recognition_languages())
+    _configure_cpu_only(request)
 
     success, error = handler.performRequests_error_([request], None)
     # keep ns_data alive past performRequests; do not remove

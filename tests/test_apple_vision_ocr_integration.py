@@ -55,3 +55,21 @@ def test_extract_blank_returns_empty():
     text, words = extract_text_with_vision(img)
     assert text == ""
     assert words == []
+
+
+def test_repeated_worker_ocr_releases_native_image_buffers():
+    """Catch image-sized growth in a fresh worker without an external pool."""
+    import json
+    import subprocess
+
+    probe = Path(__file__).parent / "manual" / "probe_macos_memory.py"
+    result = subprocess.run(
+        [sys.executable, str(probe), "vision", "--pool", "none", "--count", "80"],
+        capture_output=True, text=True, check=True, timeout=120,
+    )
+    samples = [json.loads(line) for line in result.stdout.splitlines()]
+    after_warmup = next(row for row in samples if row.get("stage") == 20)
+    last = next(row for row in samples if row.get("stage") == 80)
+    # Without draining, 60 additional 1080p RGB buffers retain ~356 MiB.
+    # Allow native caches substantial headroom while rejecting that accumulation.
+    assert last["footprint_MiB"] - after_warmup["footprint_MiB"] < 96, samples

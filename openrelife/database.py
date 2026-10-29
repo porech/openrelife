@@ -376,9 +376,37 @@ def delete_entries(timestamps: List[int]) -> int:
     except sqlite3.Error as e:
         print(f"Database error during deletion: {e}")
     if deleted_count:
+        _notify_deleted(timestamps)
+    return deleted_count
+
+
+def delete_expired_entries(cutoff_us: int, batch_size: int = 250) -> List[int]:
+    """Delete a bounded, committed batch, including legacy epoch-second rows.
+
+    Let SQLite errors propagate: a failed deletion must never look like an empty
+    batch and cause retention to proceed with deleting the corresponding files.
+    FTS deletion triggers run in the same transaction as the entries deletion.
+    """
+    with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        timestamps = [row[0] for row in conn.execute(
+            "SELECT timestamp FROM entries WHERE "
+            "(timestamp >= 100000000000000 AND timestamp < ?) OR "
+            "(timestamp >= 1000000000 AND timestamp < 100000000000 AND timestamp * 1000000 < ?) "
+            "ORDER BY timestamp LIMIT ?", (cutoff_us, cutoff_us, batch_size))]
+        if timestamps:
+            placeholders = ','.join('?' for _ in timestamps)
+            conn.execute(f"DELETE FROM entries WHERE timestamp IN ({placeholders})", timestamps)
+    if timestamps:
+        _notify_deleted(timestamps)
+    return timestamps
+
+
+def _notify_deleted(timestamps):
+    if timestamps:
         # A delete can leave deleted ids inside cached rankings (and over-report
         # total) until the freshness token catches the COUNT change. Deletes are
-        # rare, explicit user actions — clear the cache outright to stay correct.
+        # also performed by retention — clear the cache to stay correct.
         _invalidate_rank_cache()
         # Also tell the in-memory embedding index to drop these rows (deletes don't
         # bump updated_at, so the poller can't see them via the watermark).
@@ -387,9 +415,6 @@ def delete_entries(timestamps: List[int]) -> int:
             embedding_index.notify_delete(timestamps)
         except Exception:
             pass
-    return deleted_count
-
-
 
 
 def get_pending_ocr_timestamps() -> List[int]:
@@ -767,10 +792,10 @@ def fts_keyword_strengths(query_text):
 
 
 def _fts_has_matches(conn) -> bool:
-    """True if the FTS index covers the content — guards against a populated-but-empty
-    index. Probes by ROWID PRESENCE (tokenizer-independent): a token-MATCH probe would
-    be unreliable here because the tokenizer keeps '_' as a word char (so a regex-
-    extracted probe word like 'invoice' need not be a real token of 'invoice_total')."""
+    """Probe actual index metadata; an external-content table reads base rows
+    for queries without MATCH, even if its full-text index is completely empty.
+    Row presence in docsize is tokenizer-independent.
+    """
     row = conn.execute(
         "SELECT id FROM entries WHERE text IS NOT NULL AND text != '' ORDER BY id DESC LIMIT 1"
     ).fetchone()
@@ -778,7 +803,7 @@ def _fts_has_matches(conn) -> bool:
         return True  # nothing to index yet
     try:
         return conn.execute(
-            "SELECT 1 FROM entries_fts WHERE rowid = ? LIMIT 1", (row[0],)
+            "SELECT 1 FROM entries_fts_docsize WHERE id = ? LIMIT 1", (row[0],)
         ).fetchone() is not None
     except sqlite3.Error:
         return False
@@ -786,26 +811,32 @@ def _fts_has_matches(conn) -> bool:
 
 def fts_backfill_if_needed():
     """One-time backfill of the FTS index for rows that existed before it was added.
-    Idempotent and self-verifying: backfills when the index is materially behind OR
+    Idempotent and self-verifying: backfills when any indexed rows are missing OR
     populated-but-empty. Uses an explicit INSERT...SELECT (deterministic, unlike the
     bulk 'rebuild' which was observed to silently produce a non-matching index under
     concurrent writes). Safe to call from the background loader. Returns True when
     the index is usable."""
     try:
         with _connect() as conn:
-            have = conn.execute("SELECT COUNT(*) FROM entries_fts").fetchone()[0]
+            # Keep counts and rebuilding in one writer transaction: capture/OCR
+            # must not change the underlying content between these operations.
+            conn.execute("BEGIN IMMEDIATE")
+            have = conn.execute(
+                "SELECT COUNT(*) FROM entries_fts_docsize d "
+                "JOIN entries e ON e.id = d.id WHERE e.text IS NOT NULL"
+            ).fetchone()[0]
             want = conn.execute(
-                "SELECT COUNT(*) FROM entries WHERE text IS NOT NULL AND text != ''"
+                "SELECT COUNT(*) FROM entries WHERE text IS NOT NULL"
             ).fetchone()[0]
             if want == 0:
                 return True
-            if have >= want * 0.95 and _fts_has_matches(conn):
+            if have == want and _fts_has_matches(conn):
                 return True  # already populated and matching
             print(f"Building FTS keyword index ({want} text rows)...")
             conn.execute("INSERT INTO entries_fts(entries_fts) VALUES('delete-all')")
             conn.execute(
                 "INSERT INTO entries_fts(rowid, text) "
-                "SELECT id, text FROM entries WHERE text IS NOT NULL AND text != ''"
+                "SELECT id, text FROM entries WHERE text IS NOT NULL"
             )
             conn.commit()
             ok = _fts_has_matches(conn)

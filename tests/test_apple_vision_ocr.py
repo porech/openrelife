@@ -1,4 +1,5 @@
 """Unit tests for openrelife.apple_vision_ocr (mocked, always run)."""
+from contextlib import nullcontext
 from unittest.mock import patch
 
 import pytest
@@ -134,6 +135,7 @@ def test_extract_text_with_vision_propagates_errors_via_mocks(monkeypatch):
         "setRecognitionLevel_": lambda self, _: None,
         "setUsesLanguageCorrection_": lambda self, _: None,
         "setRecognitionLanguages_": lambda self, _: None,
+        "setUsesCPUOnly_": lambda self, _: None,
         "results": lambda self: [],
     })()
 
@@ -149,6 +151,7 @@ def test_extract_text_with_vision_propagates_errors_via_mocks(monkeypatch):
                 return type("A", (), {"init": lambda self: fake_request})()
 
     monkeypatch.setitem(sys.modules, "Vision", FakeVision)
+    monkeypatch.setitem(sys.modules, "objc", type("ObjC", (), {"autorelease_pool": nullcontext}))
     monkeypatch.setattr(m, "_np_image_to_cgimage",
                         lambda img: (object(), object()))
     monkeypatch.setattr(m, "_system_recognition_languages",
@@ -156,3 +159,80 @@ def test_extract_text_with_vision_propagates_errors_via_mocks(monkeypatch):
 
     with pytest.raises(RuntimeError, match="boom"):
         m.extract_text_with_vision(np.zeros((10, 10, 3), dtype=np.uint8))
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_native_temporaries_are_scoped_even_on_failure(monkeypatch, fail):
+    """Every caller gets a pool on its own thread; exceptions must drain it too."""
+    import sys
+    from contextlib import contextmanager
+    from openrelife import apple_vision_ocr as m
+
+    events = []
+
+    @contextmanager
+    def pool():
+        events.append("enter")
+        try:
+            yield
+        finally:
+            events.append("drain")
+
+    def recognize(image):
+        assert events == ["enter"]
+        if fail:
+            raise RuntimeError("recognition failed")
+        return "hello", [{"text": "hello", "x1": 0.1}]
+
+    monkeypatch.setitem(sys.modules, "objc", type("ObjC", (), {"autorelease_pool": pool}))
+    monkeypatch.setattr(m, "_extract_text_with_vision", recognize)
+    if fail:
+        with pytest.raises(RuntimeError, match="recognition failed"):
+            m.extract_text_with_vision(None)
+    else:
+        text, words = m.extract_text_with_vision(None)
+        assert text == "hello" and words[0]["text"] == "hello"
+    assert events == ["enter", "drain"]
+
+
+def test_cpu_selection_excludes_neural_engine_and_gpu(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+    from openrelife import apple_vision_ocr as m
+
+    class CPU:
+        pass
+
+    cpu = CPU()
+    assigned = {}
+    request = SimpleNamespace(
+        supportedComputeStageDevicesAndReturnError_=lambda error: ({"main": [object(), cpu]}, None),
+        setComputeDevice_forComputeStage_=lambda device, stage: assigned.update({stage: device}),
+        computeDeviceForComputeStage_=lambda stage: assigned[stage],
+    )
+    monkeypatch.setitem(sys.modules, "CoreML", SimpleNamespace(MLCPUComputeDevice=CPU))
+    m._configure_cpu_only(request)
+    assert assigned == {"main": cpu}
+
+
+def test_missing_cpu_never_silently_uses_ane(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+    from openrelife import apple_vision_ocr as m
+
+    class CPU:
+        pass
+
+    monkeypatch.setitem(sys.modules, "CoreML", SimpleNamespace(MLCPUComputeDevice=CPU))
+    request = SimpleNamespace(
+        supportedComputeStageDevicesAndReturnError_=lambda error: ({"main": [object()]}, None))
+    with pytest.raises(RuntimeError, match="no CPU device"):
+        m._configure_cpu_only(request)
+
+
+def test_legacy_vision_explicitly_uses_cpu():
+    from types import SimpleNamespace
+    from openrelife import apple_vision_ocr as m
+    assigned = []
+    m._configure_cpu_only(SimpleNamespace(setUsesCPUOnly_=assigned.append))
+    assert assigned == [True]

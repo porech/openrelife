@@ -1,6 +1,7 @@
 import numpy as np
 from sentence_transformers import SentenceTransformer
 import logging
+import sys
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -19,7 +20,11 @@ def get_model():
     if _model_cache is None:
         try:
             logger.info(f"Loading SentenceTransformer model '{MODEL_NAME}'...")
-            _model_cache = SentenceTransformer(MODEL_NAME)
+            # On macOS, variable text shapes accumulate persistent MPS graphs.
+            # This small model uses CPU inference to keep long-running workers
+            # bounded; other platforms retain automatic device selection.
+            device = "cpu" if sys.platform == "darwin" else None
+            _model_cache = SentenceTransformer(MODEL_NAME, device=device)
             logger.info(f"SentenceTransformer model '{MODEL_NAME}' loaded successfully.")
         except Exception as e:
             logger.error(f"Failed to load SentenceTransformer model '{MODEL_NAME}': {e}")
