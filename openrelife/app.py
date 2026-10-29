@@ -2240,6 +2240,7 @@ def timeline_v2():
     
     // Arrow keys
     document.addEventListener('keydown', e => {
+      if (e.defaultPrevented || e.isComposing || e.target?.closest?.('input, textarea, select, [contenteditable], [role="textbox"]')) return;
       if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
         e.preventDefault();
         const dir = e.key === 'ArrowRight' ? 1 : -1;
@@ -3920,6 +3921,7 @@ def timeline():
     
     // Arrow keys for precise navigation
     document.addEventListener('keydown', function(e) {
+      if (e.defaultPrevented || e.isComposing || e.target?.closest?.('input, textarea, select, [contenteditable], [role="textbox"]')) return;
       if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
         e.preventDefault();
         const direction = e.key === 'ArrowRight' ? 1 : -1;

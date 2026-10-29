@@ -158,6 +158,41 @@ test('Command+Enter and AI button use saved command; Markdown and previews stay 
   dom.window.close(); connections.delete(dom);
 });
 
+test('Focused controls keep arrow keys while timeline navigation still works', async () => {
+  const dom = await page(); const win = dom.window; const doc = win.document;
+  doc.getElementById('agentOpen').click();
+  await until(() => doc.getElementById('agentCommand').value.length > 0);
+  const slider = doc.getElementById('timelineSlider'); slider.value = '500';
+  const editor = doc.createElement('div'); editor.contentEditable = 'true';
+  editor.setAttribute('contenteditable', 'true'); editor.tabIndex = 0;
+  const nested = doc.createElement('span'); nested.textContent = 'Editable text';
+  editor.append(nested); doc.body.append(editor);
+  const controls = ['agentQuestion', 'agentCommand', 'agentTimeout', 'agentPreset', 'searchInput'].map(id => doc.getElementById(id));
+  controls.push(nested);
+  for (const control of controls) {
+    control.focus();
+    for (const key of ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']) {
+      for (const modifiers of [{}, { shiftKey: true }, { metaKey: true }, { altKey: true }]) {
+        const event = new win.KeyboardEvent('keydown', { key, ...modifiers, bubbles: true, cancelable: true });
+        control.dispatchEvent(event);
+        assert.equal(event.defaultPrevented, false, `${control.id || 'contenteditable'} ${key} was intercepted`);
+        assert.equal(slider.value, '500', `${control.id || 'contenteditable'} ${key} moved the timeline`);
+      }
+    }
+  }
+  doc.activeElement.blur();
+  doc.body.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
+  assert.equal(slider.value, '501');
+  doc.body.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true, cancelable: true }));
+  assert.equal(slider.value, '500');
+  const handled = new win.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true });
+  handled.preventDefault(); doc.body.dispatchEvent(handled);
+  assert.equal(slider.value, '500');
+  doc.body.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'ArrowRight', isComposing: true, bubbles: true, cancelable: true }));
+  assert.equal(slider.value, '500');
+  dom.window.close(); connections.delete(dom);
+});
+
 test('Deletion preview is a filtered timeline; adjustment and cancellation do not delete', async () => {
   const connection = JSON.parse(fs.readFileSync(path.join(root, 'archive/agent-connection.json')));
   const selected = [manifest.identifiers.telegram_native, manifest.identifiers.telegram_web];
