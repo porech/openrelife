@@ -2,6 +2,22 @@ const { app, BrowserWindow, globalShortcut, screen, Tray, Menu, nativeImage, Not
 const path = require('path');
 const { spawn, exec, execSync } = require('child_process');
 const fs = require('fs');
+const crypto = require('crypto');
+const storageOverride = app.commandLine.getSwitchValue('storage-path');
+const backendPythonOverride = app.commandLine.getSwitchValue('backend-python');
+if (storageOverride) {
+  fs.mkdirSync(path.resolve(storageOverride), { recursive: true });
+  app.setPath('userData', path.resolve(storageOverride));
+}
+const appControlToken = crypto.randomBytes(32).toString('base64url');
+const originalFetch = globalThis.fetch.bind(globalThis);
+function backendFetch(url, options = {}) {
+  const headers = new Headers(options.headers || {});
+  if (new URL(url).origin === new URL(openRecallUrl).origin) {
+    headers.set('X-OpenReLife-Control', appControlToken);
+  }
+  return originalFetch(url, { ...options, headers });
+}
 
 let serverPort = 8082;
 let openRecallUrl = `http://127.0.0.1:${serverPort}`;
@@ -9,7 +25,27 @@ let mainWindow = null;
 let tray = null;
 let isPaused = false;
 let pauseReminderInterval = null;
-let windowShouldBeVisible = false;
+let windowShouldBeVisible = app.commandLine.hasSwitch('show');
+let pendingFrameLink = null;
+
+function openFrameLink(url) {
+  try {
+    const target = new URL(url);
+    if (target.protocol !== 'openrelife:' || target.hostname !== 'frame' ||
+        target.username || target.password || !/^\/\d{10,17}$/.test(target.pathname) ||
+        !Number.isSafeInteger(Number(target.pathname.slice(1)))) return false;
+    pendingFrameLink = target.pathname.slice(1);
+    if (!app.isReady()) { windowShouldBeVisible = true; return true; }
+    showWindow();
+    if (mainWindow && mainWindow.webContents.getURL().startsWith(openRecallUrl) &&
+        !mainWindow.webContents.isLoadingMainFrame?.()) {
+      mainWindow.webContents.send('open-frame', pendingFrameLink);
+      pendingFrameLink = null;
+    }
+    return true;
+  } catch { return false; }
+}
+app.on('open-url', (event, url) => { event.preventDefault(); openFrameLink(url); });
 
 
 // Set explicit app name for notifications
@@ -24,7 +60,9 @@ function hasScreenAccess() {
 function getBackendPort() {
   try {
     let settingsPath;
-    if (process.platform === 'darwin') {
+    if (storageOverride) {
+        settingsPath = path.join(path.resolve(storageOverride), 'settings.json');
+    } else if (process.platform === 'darwin') {
         // Backend uses lowercase 'openrelife'
         settingsPath = path.join(app.getPath('home'), 'Library', 'Application Support', 'openrelife', 'settings.json');
     } else if (process.platform === 'win32') {
@@ -60,11 +98,16 @@ function loadApp(retryCount = 0) {
 
   if (retryCount === 0) console.log(`Attempting to connect to ${openRecallUrl}...`);
 
-  fetch(openRecallUrl)
+  backendFetch(openRecallUrl)
     .then(res => {
       if (res.ok) {
         console.log('✅ Backend connected! Loading app...');
-        mainWindow.loadURL(openRecallUrl);
+        Promise.resolve(mainWindow.loadURL(openRecallUrl)).then(() => {
+          if (pendingFrameLink && mainWindow) {
+            mainWindow.webContents.send('open-frame', pendingFrameLink);
+            pendingFrameLink = null;
+          }
+        });
         if (windowShouldBeVisible && process.platform === 'darwin') {
            mainWindow.setSimpleFullScreen(true);
         }
@@ -110,6 +153,19 @@ function createWindow() {
     icon: path.join(__dirname, 'app-icon.png')
   });
 
+  mainWindow.webContents.session.webRequest.onBeforeSendHeaders(
+    { urls: ['http://127.0.0.1/*'] }, (details, callback) => {
+      if (new URL(details.url).origin === new URL(openRecallUrl).origin &&
+          details.webContentsId === mainWindow?.webContents.id) {
+        details.requestHeaders['X-OpenReLife-Control'] = appControlToken;
+      }
+      callback({ requestHeaders: details.requestHeaders });
+    });
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (new URL(url).origin !== new URL(openRecallUrl).origin) event.preventDefault();
+  });
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+
   // Whenever the window shows/hides, tell the backend so capture never grabs the
   // app itself — covers the initial ready-to-show, the tray "Show", and hide paths.
   mainWindow.on('show', () => setViewerOpen(true));
@@ -121,7 +177,7 @@ function createWindow() {
   // On first launch without Screen Recording permission, trigger the macOS
   // prompt once. Missing permissions are then surfaced by the in-app chips —
   // we do NOT poll or re-request here (repeated requests caused a prompt loop).
-  if (process.platform === 'darwin' && !hasScreenAccess()) {
+  if (process.platform === 'darwin' && !app.commandLine.hasSwitch('no-capture') && !hasScreenAccess()) {
       desktopCapturer.getSources({ types: ['screen'] })
           .then(() => console.log('Screen Recording permission prompt triggered'))
           .catch(err => console.error('Permission prompt error:', err));
@@ -177,7 +233,7 @@ function setViewerOpen(open, attempt = 0) {
   // Tell the backend whether the viewer window is on screen so the capture loop
   // never screenshots OpenReLife itself. The backend may still be starting at
   // launch, so retry briefly — the initial "viewer visible" state must not be lost.
-  fetch(`${openRecallUrl}/api/viewer-open`, {
+  backendFetch(`${openRecallUrl}/api/viewer-open`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ open })
@@ -236,7 +292,7 @@ function hideWindow() {
 
 async function checkRecordingStatus(retryCount = 0) {
   try {
-    const res = await fetch(`${openRecallUrl}/api/recording-status`);
+    const res = await backendFetch(`${openRecallUrl}/api/recording-status`);
     if (!res.ok) throw new Error('Status check failed');
     const data = await res.json();
     isPaused = data.paused;
@@ -255,7 +311,7 @@ async function checkRecordingStatus(retryCount = 0) {
 async function toggleRecording() {
   try {
     const endpoint = isPaused ? '/api/resume-recording' : '/api/pause-recording';
-    const res = await fetch(`${openRecallUrl}${endpoint}`, { method: 'POST' });
+    const res = await backendFetch(`${openRecallUrl}${endpoint}`, { method: 'POST' });
     const data = await res.json();
     isPaused = data.paused;
     updateTrayMenu();
@@ -559,17 +615,18 @@ async function startBackend() {
   let venvPath;
   try {
       // internal logging already done in setupVenv
-      venvPath = await setupVenv(projectRoot, backendLogStream);
+      venvPath = backendPythonOverride ? path.dirname(path.dirname(path.resolve(backendPythonOverride))) : await setupVenv(projectRoot, backendLogStream);
   } catch (err) {
       throw err; // Re-throw to be caught by app.whenReady
   }
 
   // Determine python executable in the venv
-  const pythonExec = path.join(venvPath, 'bin', 'python');
+  const pythonExec = backendPythonOverride ? path.resolve(backendPythonOverride) : path.join(venvPath, 'bin', 'python');
 
   const env = { 
     ...process.env, 
     PYTHONUNBUFFERED: '1',
+    OPENRELIFE_CONTROL_FD: '3',
     // Keep Python from modifying signed resources inside the application bundle.
     PYTHONDONTWRITEBYTECODE: '1',
     VIRTUAL_ENV: venvPath,
@@ -580,12 +637,17 @@ async function startBackend() {
   
   console.log('Spawning backend with python:', pythonExec);
 
-  pythonProcess = spawn(pythonExec, ['-m', 'openrelife.app'], {
+  const backendArgs = ['-m', 'openrelife.app'];
+  if (storageOverride) backendArgs.push('--storage-path', path.resolve(storageOverride));
+  if (app.commandLine.hasSwitch('no-capture')) backendArgs.push('--no-capture');
+  pythonProcess = spawn(pythonExec, backendArgs, {
     cwd: projectRoot,
     shell: false,
     env: env,
-    detached: false
+    detached: false,
+    stdio: ['ignore', 'pipe', 'pipe', 'pipe']
   });  
+  pythonProcess.stdio[3].end(appControlToken);
   if (backendLogStream) {
      const timestamp = new Date().toISOString();
      backendLogStream.write(`\n--- New Session: ${timestamp} ---\n`);
@@ -673,6 +735,7 @@ function stopBackend() {
 }
 
 app.whenReady().then(async () => {
+  if (app.isPackaged && !storageOverride) app.setAsDefaultProtocolClient('openrelife');
   // Hide dock immediately to avoid transition issues later
   // This helps prevent the app from losing focus when dock hides
   app.dock.hide();
@@ -779,8 +842,8 @@ app.on('will-quit', () => {
 
 // Prevent app from quitting
 app.on('before-quit', (event) => {
-  // stopBackend(); // will-quit handles it
-  // Allow quit only if explicitly requested
+  // Cover native/Apple-event quit paths as well as our custom menu command.
+  app.isQuitting = true;
 });
 
 function createMenu() {

@@ -11,6 +11,8 @@ from typing import Any, List, Optional, Tuple
 
 from openrelife.config import db_path
 
+_delete_observers = []
+
 
 @contextmanager
 def _connect():
@@ -404,6 +406,8 @@ def delete_expired_entries(cutoff_us: int, batch_size: int = 250) -> List[int]:
 
 def _notify_deleted(timestamps):
     if timestamps:
+        for observer in _delete_observers:
+            observer(timestamps)
         # A delete can leave deleted ids inside cached rankings (and over-report
         # total) until the freshness token catches the COUNT change. Deletes are
         # also performed by retention — clear the cache to stay correct.

@@ -13,6 +13,13 @@ same archive operations and filtering semantics.
 
 ### Reconstructable tests and efficient tools
 
+- Never pause capture in the personal store for UI acceptance tests. Launch a
+  separate synthetic archive with `--storage-path` and `--no-capture`. UI tools
+  may stall beyond their requested timeout; do not tie restoration of a real
+  user's recording state to a tool returning. If a different task explicitly
+  needs a temporary pause, install and verify an independent expiry/watchdog
+  before pausing and preserve the previous recording state.
+
 - Assign each agent run an identifier and preserve its execution trace locally:
   selected preset, executable and redacted arguments, query, dataset/time scope,
   public tool calls and normalized filters, result identifiers and counts,

@@ -7,7 +7,7 @@ from flask import Flask, render_template_string, request, send_from_directory, j
 from jinja2 import BaseLoader
 from PIL import Image
 
-from openrelife.config import appdata_folder, screenshots_path
+from openrelife.config import appdata_folder, screenshots_path, args
 from openrelife.database import create_db, get_timestamps, update_ai_ocr, delete_entries, get_entry_by_timestamp, get_entries_light, get_entries_metadata, get_new_timestamps, search_entries_streaming, build_snippet, DEFAULT_MIN_SIMILARITY
 from openrelife.nlp import get_embedding
 from openrelife.screenshot import (
@@ -34,12 +34,16 @@ from openrelife.screenshot import (
 )
 from openrelife.ocr_safety import OcrSafetyError
 from openrelife.retention import RetentionManager, validate_days
+from openrelife.agent import register_agent_routes, control_token_from_parent
 from openrelife.apple_vision_ocr import is_apple_vision_available
 from openrelife.utils import human_readable_time, timestamp_to_human_readable, has_screen_permission, has_accessibility_permission
 from openrelife.ai_ocr import get_ai_provider
 
 app = Flask(__name__)
 retention_manager = RetentionManager(appdata_folder)
+agent_service = register_agent_routes(app, appdata_folder, control_token_from_parent())
+from openrelife import database as _database
+_database._delete_observers.append(agent_service.invalidate)
 
 
 def _save_settings_atomically(settings_path, settings):
@@ -1668,6 +1672,31 @@ def timeline_v2():
     </div>
   </div>
   
+  <link rel="stylesheet" href="/assets/agents.css">
+  <button id="agentOpen" class="agent-open" title="Ask your history (Command+Enter)">Ask agent ⌘↵</button>
+  <aside id="agentPanel" class="agent-panel" hidden>
+    <div class="agent-header"><strong>Ask your history</strong><button id="agentClose" aria-label="Close agent panel">×</button></div>
+    <details id="agentSettings"><summary>Agent command and MCP connection</summary>
+      <label>Preset<select id="agentPreset"><option value="codex">Codex</option><option value="claude">Claude</option><option value="custom">Custom command</option></select></label>
+      <label>Command<textarea id="agentCommand" rows="4" spellcheck="false"></textarea></label>
+      <label>Timeout (seconds)<input id="agentTimeout" type="number" min="10" max="1800" value="300"></label>
+      <p class="agent-help">Commands receive the question on stdin. Presets connect the archive MCP automatically. A custom command can use {mcp_config} and OPENRELIFE_MCP_CONFIG. No direct archive writes.</p>
+      <button id="agentSave">Save command</button>
+      <p class="agent-help">External MCP clients: use this stdio command while OpenReLife is running.</p><pre id="agentMcpCommand"></pre>
+    </details>
+    <label>Question<textarea id="agentQuestion" rows="3" placeholder="Find a meeting I attended last week"></textarea></label>
+    <div class="agent-actions"><button id="agentStart">Ask</button><button id="agentCancel" hidden>Stop</button><span id="agentState" role="status"></span></div>
+    <div id="agentAnswer" class="agent-answer" aria-live="polite"></div>
+    <div id="agentEvidence"></div><div id="agentSelections"></div>
+    <details><summary>Execution trace</summary><pre id="agentTrace"></pre><a id="agentTraceDownload" hidden>Download trace</a></details>
+  </aside>
+  <section id="agentDeletePreview" class="agent-delete-preview" hidden>
+    <strong>Deletion preview — selected frames only</strong><span id="agentDeleteSummary"></span>
+    <div id="agentDeleteThumbs" class="agent-delete-thumbs"></div>
+    <button id="agentExclude">Exclude current frame</button><button id="agentResetSelection">Reset selection</button><button id="agentExitPreview">Cancel preview</button>
+  </section>
+  <script src="/assets/agents.js" defer></script>
+
   <!-- Toast container -->
   <div class="toast-container" id="toastContainer"></div>
   
@@ -1771,6 +1800,7 @@ def timeline_v2():
     }
 
     function enterDeleteMode() {
+      if (window.openrelifeAgentUI?.preview) return;
       isDeleteMode = true;
       document.getElementById('timelinePill').classList.add('delete-mode');
       document.getElementById('deleteControls').style.display = 'flex';
@@ -1783,6 +1813,7 @@ def timeline_v2():
     }
     
     function exitDeleteMode() {
+      if (window.openrelifeAgentUI?.preview) return window.openrelifeAgentUI.exitPreview();
       isDeleteMode = false;
       document.getElementById('timelinePill').classList.remove('delete-mode');
       document.getElementById('deleteControls').style.display = 'none';
@@ -1797,6 +1828,7 @@ def timeline_v2():
     }
     
     async function confirmDelete() {
+      if (window.openrelifeAgentUI?.preview) return window.openrelifeAgentUI.confirmSelection();
       if (!confirm('Are you sure you want to delete these screenshots?')) return;
       
       const btn = document.getElementById('btnConfirmDelete');
@@ -1837,6 +1869,7 @@ def timeline_v2():
     let syncIndicator = null;
 
     async function syncData() {
+      if (window.openrelifeAgentUI?.preview) return;
       try {
         const wasAtLatest = timestamps.length > 0 && parseInt(slider.value) === parseInt(slider.max);
 
@@ -2608,6 +2641,9 @@ def timeline_v2():
     });
 
     function goToTimestamp(ts) {
+      if (window.openrelifeAgentUI?.preview && !timestamps.includes(ts)) {
+        window.openrelifeAgentUI.exitPreview();
+      }
       const idx = timestamps.indexOf(ts);
       if (idx !== -1) {
         slider.value = timestamps.length - 1 - idx;
@@ -3236,6 +3272,9 @@ def timeline_v2():
 
     // Electron UI Reset
     if (window.electronAPI) {
+      if (window.electronAPI.onOpenFrame) window.electronAPI.onOpenFrame((timestamp) => {
+        if (/^\d{10,17}$/.test(String(timestamp))) goToTimestamp(Number(timestamp));
+      });
       window.electronAPI.onOpenSettings(() => {
           openSettings();
       });
@@ -4308,6 +4347,11 @@ def serve_image(filename):
     return send_from_directory(screenshots_path, filename)
 
 
+@app.route('/assets/<path:filename>')
+def app_assets(filename):
+    return send_from_directory(os.path.join(os.path.dirname(__file__), 'static'), filename)
+
+
 @app.route("/api/ai-ocr", methods=["POST"])
 def ai_ocr():
     """Endpoint to perform AI OCR on a screenshot"""
@@ -4769,6 +4813,10 @@ if __name__ == "__main__":
     
     create_db()
     load_settings()
+    if not agent_service.control_token:
+        import secrets
+        agent_service.control_token = secrets.token_urlsafe(32)
+    agent_service.publish_connection(configured_port)
     retention_manager.start()
 
     print(f"Appdata folder: {appdata_folder}")
@@ -4781,12 +4829,14 @@ if __name__ == "__main__":
     embedding_index.start()
 
     # Start capture thread (fast, every 3s)
-    t = Thread(target=record_screenshots_thread, daemon=True)
-    t.start()
+    if not args.no_capture:
+        t = Thread(target=record_screenshots_thread, daemon=True)
+        t.start()
 
     # Start OCR worker thread (processes queue in background)
-    ocr_t = Thread(target=ocr_worker_thread, daemon=True)
-    ocr_t.start()
+    if not args.no_capture:
+        ocr_t = Thread(target=ocr_worker_thread, daemon=True)
+        ocr_t.start()
 
     # Use Waitress for production. 16 threads gives headroom so static file
     # serving (/static/*.webp for the timeline scrubber) doesn't queue behind

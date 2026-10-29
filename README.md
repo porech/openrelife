@@ -48,6 +48,102 @@ The software is currently in active development (with a huge help from AI agents
 - **Auto-Pause**: Recording automatically pauses when you are inactive to save space.
 - **Incognito Detection**: Automatically detects incognito/private browsing mode on ALL visible browser windows (Chrome, Safari, Firefox, Edge, Arc, Brave, Opera, Vivaldi, and more). When detected, recording is paused to protect your privacy. This feature can be toggled in the settings.
 
+## Ask your history and connect an agent (1.1.5)
+
+Press **Command+Enter** in the search bar, or click **Ask agent**, to open the
+agent panel. Under **Agent command and MCP connection**, choose the editable
+Codex or Claude preset, or enter a custom command, then save it. Use the CLI's
+existing login; OpenReLife does not require a separate model API integration.
+The chosen command may use a cloud model: retrieved OCR and images are then
+sent through that command to its configured provider. Local capture, ordinary
+search and OCR continue to work without an agent or cloud model.
+
+The panel shows the answer, clickable screenshot citations, evidence links,
+tool-call counts, transferred bytes and an execution trace. The presets connect
+OpenReLife's archive tools automatically. A custom command receives the question
+on stdin and can return text or an `{"answer":"..."}` JSON object. Commands run
+in a temporary working directory: use absolute paths for custom scripts.
+`{mcp_config}` in an argument expands to the generated MCP configuration path;
+the same path is available as `OPENRELIFE_MCP_CONFIG`. There is no shell
+interpolation of the question. A response from a command that did not use any
+archive tools is explicitly marked as ungrounded.
+
+### Local MCP access
+
+The panel displays the exact stdio command for external MCP clients. Register
+that command in the client's MCP configuration while OpenReLife is running.
+The bridge is `python -B -m openrelife.mcp_server --connection <connection-file>`;
+the desktop app maintains the private connection file automatically. Tools:
+
+- `archive_status`: available dates, applications, counts and pending OCR.
+- `find_frames`: bounded chronological listing with time, app, title, OCR text,
+  any-term and OCR-state filters. A text query is not required.
+- `semantic_search`: keyword/semantic ranking with time and app filters.
+- `read_frames` and `view_frame`: paginated OCR or a size-limited screenshot.
+- `neighboring_frames` and `find_intervals`: chronological context, capture
+  gaps and groups of matching frames, for investigating observed events.
+- `propose_deletion`: select individual instants or disjoint intervals. Pass an
+  existing `selection_id` to add another batch to the same proposal.
+
+Agents must distinguish an observed frame from a proven event start. Missing
+captures or pending OCR mean incomplete evidence, not proof an event did not
+happen. The tools expose screenshot citations as `openrelife://frame/<timestamp>`.
+
+### Deletion stays in the app
+
+An agent can propose candidates but cannot execute deletion through MCP. Open
+**Review deletion timeline** to inspect only the proposed frames, their
+thumbnails, dates, count and size. Exclude individual frames or reset/cancel the
+selection, then use the app's existing confirmation button. The confirmation
+is bound to the exact reviewed snapshot; newly captured or newly matching
+frames are not silently included. If an agent appends to a proposal, the old
+preview cannot confirm it until reloaded.
+
+Within the supported macOS command runner, an outer OS sandbox prevents direct
+archive reads/writes, including resolved screenshot-directory symlinks. Archive
+access goes through the scoped MCP API. The desktop's separate mutation
+capability travels over a private pipe and is added only to the owned WebView's
+requests. The HTTP interface now requires that capability outside the scoped
+MCP endpoint: open the desktop UI rather than browsing the raw localhost URL.
+External MCP clients retain their host's own OS permissions; registering this
+server does not sandbox the entire external client.
+
+### Traces, budgets and validation
+
+Runs have identifiers and local JSONL traces under `agent/traces` in the data
+directory. They record queries, redacted commands, public tool inputs, returned
+frame identifiers, output hashes, byte counts, timings, CLI events, failures,
+exit codes, cancellation and timeout. Image payloads are omitted from traces.
+No hidden model reasoning is reconstructed. Source-dependent in-app answers
+and traces are invalidated when their screenshots are deleted; older-session
+trace caches are conservatively discarded on deletion.
+
+The runner permits one in-app run at a time, up to 150 tool calls and about
+30 MiB of tool responses per run. The default timeout is 300 seconds and can be
+configured between 10 and 1800 seconds. Traces are capped per run and pruned to
+100 MiB/30 days on startup; pending proposals are bounded to 20 files,
+100 MiB and seven days. Local command execution currently requires macOS.
+
+Development checks use disposable synthetic archives, never the personal
+capture store:
+
+```sh
+.venv/bin/python -m pytest -q
+cd electron-app
+node --test tests/agents.test.cjs tests/agent-security.test.cjs
+cd ..
+.venv/bin/python tests/manual/check_agents_public.py --providers codex claude
+```
+
+The public test starts the normal backend with `--storage-path` and
+`--no-capture`, exercises the real stdio MCP client and command runner, and
+preserves failures and semantic checks under `logs/agent-integration-*`.
+JavaScript tests use the product HTML and scripts in a simulated DOM; they
+are not native visual acceptance. Validate the native layout on a Mac as well.
+For an isolated desktop archive, the app also accepts `--storage-path=<path>`,
+`--no-capture` and `--show`; `--backend-python=<absolute-path>` selects an
+existing development interpreter instead of creating another environment.
+
 ## Get Started
  
 ### Prerequisites

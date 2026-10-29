@@ -17,6 +17,9 @@ parser.add_argument(
     default=False,
 )
 
+parser.add_argument('--no-capture', action='store_true',
+                    help='Serve an existing archive without capturing or processing new screenshots')
+
 args = parser.parse_args()
 
 
