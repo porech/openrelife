@@ -1,4 +1,7 @@
-.agent-open { position:fixed; top:18px; right:20px; z-index:100; border:1px solid #555; border-radius:9px; background:#252525; color:#ddd; padding:7px 12px; font-size:12px; }
+.search-input { padding-right:88px; }
+.search-agent-button { position:absolute; right:41px; top:50%; transform:translateY(-50%); border:1px solid #8992f052; border-radius:8px; background:#8c96ff1a; color:#cbd0ff; padding:3px 7px; font:600 11px/1.4 -apple-system,BlinkMacSystemFont,sans-serif; letter-spacing:.02em; cursor:pointer; }
+.search-agent-button:hover { background:#8c96ff38; border-color:#a4adff88; }
+.search-agent-button:focus-visible { outline:2px solid #b5beff; outline-offset:3px; }
 .agent-panel { position:fixed; top:0; right:0; bottom:0; width:min(460px,100vw); z-index:8000; background:#1b1b1f; color:#eee; border-left:1px solid #444; box-shadow:-12px 0 40px #0008; padding:20px; overflow-y:auto; font:14px/1.5 -apple-system,BlinkMacSystemFont,sans-serif; }
 .agent-panel[hidden],.agent-delete-preview[hidden] { display:none; }
 .agent-header { display:flex; align-items:center; justify-content:space-between; font-size:20px; margin-bottom:18px; }
@@ -13,7 +16,25 @@
 .agent-actions { display:flex; align-items:center; gap:10px; }
 #agentStart { background:#5665cf; border-color:#7482ee; }
 #agentState { color:#bbb; font-size:12px; }
-.agent-answer { white-space:pre-wrap; overflow-wrap:anywhere; margin:20px 0; }
+.agent-answer { overflow-wrap:anywhere; margin:20px 0; }
+.agent-answer p,.agent-answer ul,.agent-answer ol,.agent-answer blockquote,.agent-answer pre { margin:0 0 12px; }
+.agent-answer h1,.agent-answer h2,.agent-answer h3,.agent-answer h4,.agent-answer h5,.agent-answer h6 { font-size:1.1em; line-height:1.4; margin:18px 0 10px; color:#f4f4ff; }
+.agent-answer ul,.agent-answer ol { padding-left:24px; }
+.agent-answer li { margin:4px 0; }
+.agent-answer li > p { margin-bottom:4px; }
+.agent-answer blockquote { border-left:3px solid #777fae; padding-left:12px; color:#c2c3d0; }
+.agent-answer code { background:#101014; color:#e0d4fc; padding:2px 4px; border-radius:4px; font-size:.9em; }
+.agent-answer pre { max-height:none; white-space:pre; overflow:auto; font-size:12px; }
+.agent-answer pre code { padding:0; background:none; }
+.agent-answer table { display:block; max-width:100%; overflow-x:auto; border-collapse:collapse; margin:12px 0; font-size:12px; }
+.agent-answer th,.agent-answer td { border:1px solid #45454f; padding:7px 9px; vertical-align:top; }
+.agent-answer th { background:#292932; font-weight:600; }
+.agent-answer hr { border:0; border-top:1px solid #45454f; margin:16px 0; }
+.agent-frame-preview { position:fixed; z-index:9000; pointer-events:none; border:1px solid #5c5e71; border-radius:10px; padding:6px; box-sizing:border-box; background:#202025; color:#d7d8e2; box-shadow:0 10px 35px #0009; font:11px/1.4 -apple-system,BlinkMacSystemFont,sans-serif; }
+.agent-frame-preview[hidden] { display:none; }
+.agent-frame-preview img { display:block; width:100%; height:auto; max-height:210px; object-fit:contain; border-radius:5px; background:#101014; }
+.agent-frame-preview img[hidden] { display:none; }
+.agent-frame-preview div { padding:5px 3px 1px; }
 .agent-panel a { color:#b5beff; }
 .agent-evidence-link { display:inline-block; margin:4px; padding:4px 7px; border:1px solid #555; border-radius:5px; font-size:12px; }
 .agent-selection-card { margin-top:12px; padding:12px; border:1px solid #a66b37; border-radius:8px; background:#33251b; }
@@ -24,4 +45,4 @@
 .agent-delete-thumbs button.current { border:2px solid #e99b9b; }
 .agent-delete-thumbs img { display:block; width:72px; height:46px; object-fit:cover; }
 .agent-delete-thumbs span { display:block; font-size:9px; }
-@media(max-width:600px) { .agent-open { top:10px; right:10px; font-size:10px; } .agent-delete-preview { bottom:125px; } }
+@media(max-width:600px) { .agent-delete-preview { bottom:125px; } }

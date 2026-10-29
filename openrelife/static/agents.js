@@ -1,8 +1,13 @@
 /* Agent commands and app-owned deletion previews. No model output is evaluated. */
 (() => {
   const el = id => document.getElementById(id);
-  let settings, activeRun, timer, originalTimeline;
+  let settings, activeRun, timer, originalTimeline, lastAnswer, lastEvidence;
+  let hoverTimer, previewLink;
   const ui = window.openrelifeAgentUI = { preview: null, exitPreview, confirmSelection };
+  const framePreview = document.createElement('div');
+  framePreview.id = 'agentFramePreview'; framePreview.className = 'agent-frame-preview';
+  framePreview.setAttribute('role', 'tooltip'); framePreview.hidden = true;
+  document.body.append(framePreview);
 
   async function api(path, data, method) {
     const response = await fetch(path, { method: method || (data ? 'POST' : 'GET'),
@@ -28,13 +33,17 @@
     if (!el('agentQuestion').value) el('agentQuestion').value = searchInput.value;
     el('agentQuestion').focus();
   }
-  el('agentOpen').onclick = () => openPanel().catch(message);
-  el('agentClose').onclick = () => { el('agentPanel').hidden = true; };
+  function askFromSearch() {
+    el('agentQuestion').value = searchInput.value;
+    clearTimeout(searchTimeout); resetSearchState(); hidePaletteActions();
+    openPanel().then(() => { if (el('agentQuestion').value.trim()) return start(); }).catch(message);
+  }
+  el('agentOpen').onclick = askFromSearch;
+  el('agentClose').onclick = () => { hideFramePreview(); el('agentPanel').hidden = true; };
   searchInput.addEventListener('keydown', event => {
     if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
       event.preventDefault(); event.stopImmediatePropagation();
-      el('agentQuestion').value = searchInput.value;
-      openPanel().then(start).catch(message);
+      askFromSearch();
     }
   }, true);
   el('agentPreset').onchange = () => {
@@ -62,18 +71,57 @@
       catch (error) { clearInterval(timer); timer = null; el('agentStart').disabled = false; el('agentCancel').hidden = true; message(error); }
     }, 1000);
   }
+  function hideFramePreview() {
+    clearTimeout(hoverTimer);
+    if (previewLink) previewLink.removeAttribute('aria-describedby');
+    previewLink = null; framePreview.hidden = true; framePreview.replaceChildren();
+  }
+  function showFramePreview(link, identifier) {
+    if (!link.isConnected || el('agentPanel').hidden) return;
+    previewLink = link; link.setAttribute('aria-describedby', framePreview.id);
+    const image = document.createElement('img'), caption = document.createElement('div');
+    image.alt = `Screenshot from ${date(identifier)}`; image.hidden = true;
+    caption.textContent = 'Loading preview…';
+    framePreview.replaceChildren(image, caption); framePreview.hidden = false;
+    // Keep the preview within the viewport, beside the panel when space permits.
+    const rect = link.getBoundingClientRect();
+    const width = Math.min(340, window.innerWidth - 16), height = 260;
+    framePreview.style.width = `${width}px`;
+    const left = rect.left >= width + 20 ? rect.left - width - 12 : rect.left;
+    framePreview.style.left = `${Math.max(8, Math.min(left, window.innerWidth - width - 8))}px`;
+    framePreview.style.top = `${Math.max(8, Math.min(rect.bottom + 8, window.innerHeight - height - 8))}px`;
+    image.onload = () => { if (previewLink === link && image.isConnected) { image.hidden = false; caption.textContent = date(identifier); } };
+    image.onerror = () => { if (previewLink === link && image.isConnected) caption.textContent = 'Screenshot unavailable'; };
+    image.src = `/api/frames/${identifier}/thumbnail`;
+  }
+  function frameLink(link, identifier) {
+    link.href = '#'; link.dataset.frameId = identifier;
+    link.onclick = event => { event.preventDefault(); hideFramePreview(); el('agentPanel').hidden = true; goToTimestamp(Number(identifier)); };
+    link.onmouseenter = () => { hideFramePreview(); hoverTimer = setTimeout(() => showFramePreview(link, identifier), 220); };
+    link.onmouseleave = hideFramePreview;
+    link.onfocus = () => { hideFramePreview(); showFramePreview(link, identifier); };
+    link.onblur = hideFramePreview;
+  }
+  window.addEventListener('resize', hideFramePreview);
+  document.addEventListener('scroll', hideFramePreview, true);
   function renderAnswer(text) {
-    const target = el('agentAnswer'); target.replaceChildren();
-    const pattern = /\[([^\]]+)\]\(openrelife:\/\/frame\/(\d+)\)/g;
-    let end = 0, match;
-    while ((match = pattern.exec(text))) {
-      target.append(document.createTextNode(text.slice(end, match.index)));
-      const link = document.createElement('a'); link.href = '#'; link.textContent = match[1];
-      const timestamp = Number(match[2]);
-      link.onclick = event => { event.preventDefault(); el('agentPanel').hidden = true; goToTimestamp(timestamp); };
-      target.append(link); end = pattern.lastIndex;
+    if (text === lastAnswer) return;
+    lastAnswer = text; hideFramePreview();
+    const target = el('agentAnswer');
+    if (!window.marked || !window.DOMPurify) { target.textContent = text; return; }
+    // Model output is untrusted. Allow formatting, never images, scripts or arbitrary URLs.
+    const fragment = DOMPurify.sanitize(marked.parse(text, { gfm: true, breaks: true }), {
+      ALLOWED_TAGS: ['p', 'br', 'strong', 'em', 'del', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+        'ul', 'ol', 'li', 'blockquote', 'code', 'pre', 'hr', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'a'],
+      ALLOWED_ATTR: ['href', 'title', 'start', 'align'], ALLOW_DATA_ATTR: false, ALLOW_ARIA_ATTR: false,
+      ALLOWED_URI_REGEXP: /^openrelife:\/\/frame\/\d{10,17}$/, RETURN_DOM_FRAGMENT: true,
+    });
+    for (const link of fragment.querySelectorAll('a')) {
+      const match = /^openrelife:\/\/frame\/(\d{10,17})$/.exec(link.getAttribute('href') || '');
+      if (match && Number.isSafeInteger(Number(match[1]))) frameLink(link, match[1]);
+      else link.replaceWith(...link.childNodes);
     }
-    target.append(document.createTextNode(text.slice(end)));
+    target.replaceChildren(fragment);
   }
   function renderRun(run) {
     if (activeRun && run.run_id !== activeRun) return;
@@ -90,11 +138,15 @@
       return event.type;
     }).join('\n');
     el('agentTraceDownload').hidden = false; el('agentTraceDownload').href = `/api/agent/runs/${run.run_id}/trace`;
-    const evidence = el('agentEvidence'); evidence.replaceChildren();
-    for (const identifier of (run.evidence_frame_ids || []).slice(0, 30)) {
-      const link = document.createElement('a'); link.className = 'agent-evidence-link'; link.href = '#'; link.textContent = date(identifier);
-      link.onclick = event => { event.preventDefault(); el('agentPanel').hidden = true; goToTimestamp(Number(identifier)); };
-      evidence.append(link);
+    const identifiers = (run.evidence_frame_ids || []).slice(0, 30).filter(value => /^\d{10,17}$/.test(value) && Number.isSafeInteger(Number(value)));
+    const evidenceKey = identifiers.join(',');
+    if (lastEvidence !== evidenceKey) {
+      lastEvidence = evidenceKey;
+      const evidence = el('agentEvidence'); evidence.replaceChildren();
+      for (const identifier of identifiers) {
+        const link = document.createElement('a'); link.className = 'agent-evidence-link'; link.textContent = date(identifier);
+        frameLink(link, identifier); evidence.append(link);
+      }
     }
     if (!running) { if (timer) clearInterval(timer); timer = null; loadSelections().catch(message); }
   }
@@ -110,6 +162,7 @@
     }
   }
   async function preview(identifier) {
+    hideFramePreview();
     if (ui.preview) exitPreview();
     const selection = await api(`/api/agent/selections/${identifier}`);
     if (!selection.count) throw new Error('This selection is empty');
@@ -171,6 +224,7 @@
     } catch (error) { alert(error.message); button.disabled = false; }
   }
   document.addEventListener('keydown', event => {
+    if (event.key === 'Escape') hideFramePreview();
     if (event.key === 'Escape' && ui.preview) {
       event.preventDefault(); event.stopImmediatePropagation(); exitPreview();
     }

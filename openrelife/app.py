@@ -1,9 +1,10 @@
 from threading import Thread
 import os
 import base64
+import io
 
 import numpy as np
-from flask import Flask, render_template_string, request, send_from_directory, jsonify
+from flask import Flask, render_template_string, request, send_from_directory, send_file, jsonify
 from jinja2 import BaseLoader
 from PIL import Image
 
@@ -496,7 +497,7 @@ def timeline_v2():
     .search-container { position: fixed; top: 22px; left: 50%; right: auto; transform: translateX(-50%); z-index: 1000; }
     .search-wrapper { position: relative; }
     .search-input {
-      width: min(400px, calc(100vw - 100px)); padding: 12px 45px 12px 20px; border-radius: 24px;
+      width: min(490px, calc(100vw - 40px)); padding: 12px 45px 12px 20px; border-radius: 24px;
       border: 1px solid rgba(255,255,255,0.15); background: rgba(20,20,20,0.75);
       backdrop-filter: blur(30px); color: #fff; font-size: 15px; transition: all 0.2s;
     }
@@ -1429,11 +1430,12 @@ def timeline_v2():
     <!-- Search bar -->
     <div class="search-container">
       <div class="search-wrapper" id="searchWrapper">
-        <input type="text" class="search-input" id="searchInput" placeholder="Search your history..."
+        <input type="text" class="search-input" id="searchInput" placeholder="Search your history… (CMD+Enter to Ask AI)"
                role="combobox" aria-expanded="false" aria-controls="resultsGrid"
                aria-autocomplete="list" autocomplete="off">
         <i class="bi bi-search search-icon" id="searchIcon"></i>
         <i class="bi bi-x-circle-fill clear-icon" id="searchClear" style="display: none;"></i>
+        <button type="button" id="agentOpen" class="search-agent-button" title="Ask AI (Command+Enter)" aria-label="Ask AI about your history (Command+Enter)">AI</button>
       </div>
     </div>
 
@@ -1673,7 +1675,6 @@ def timeline_v2():
   </div>
   
   <link rel="stylesheet" href="/assets/agents.css">
-  <button id="agentOpen" class="agent-open" title="Ask your history (Command+Enter)">Ask agent ⌘↵</button>
   <aside id="agentPanel" class="agent-panel" hidden>
     <div class="agent-header"><strong>Ask your history</strong><button id="agentClose" aria-label="Close agent panel">×</button></div>
     <details id="agentSettings"><summary>Agent command and MCP connection</summary>
@@ -1695,6 +1696,8 @@ def timeline_v2():
     <div id="agentDeleteThumbs" class="agent-delete-thumbs"></div>
     <button id="agentExclude">Exclude current frame</button><button id="agentResetSelection">Reset selection</button><button id="agentExitPreview">Cancel preview</button>
   </section>
+  <script src="/assets/vendor/marked.js" defer></script>
+  <script src="/assets/vendor/purify.min.js" defer></script>
   <script src="/assets/agents.js" defer></script>
 
   <!-- Toast container -->
@@ -4350,6 +4353,25 @@ def serve_image(filename):
 @app.route('/assets/<path:filename>')
 def app_assets(filename):
     return send_from_directory(os.path.join(os.path.dirname(__file__), 'static'), filename)
+
+
+@app.route('/api/frames/<int:timestamp>/thumbnail')
+def frame_thumbnail(timestamp):
+    path = os.path.join(screenshots_path, f'{timestamp}.webp')
+    if not get_entry_by_timestamp(timestamp) or not os.path.isfile(path):
+        return jsonify(error='Screenshot unavailable'), 404
+    try:
+        with Image.open(path) as image:
+            image.thumbnail((480, 300))
+            buffer = io.BytesIO()
+            image.convert('RGB').save(buffer, format='JPEG', quality=75)
+    except (FileNotFoundError, OSError):
+        return jsonify(error='Screenshot unavailable'), 404
+    buffer.seek(0)
+    response = send_file(buffer, mimetype='image/jpeg')
+    response.headers['Cache-Control'] = 'private, no-store'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    return response
 
 
 @app.route("/api/ai-ocr", methods=["POST"])

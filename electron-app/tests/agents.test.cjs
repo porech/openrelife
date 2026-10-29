@@ -69,8 +69,13 @@ async function page() {
   win.scrollTo = () => {};
   win.HTMLElement.prototype.scrollIntoView = () => {};
   const inline = [...win.document.querySelectorAll('script:not([src])')].map(script => script.textContent).join('\n');
-  const agent = await fetch(base + '/assets/agents.js', { headers: { 'X-OpenReLife-Control': control } }).then(result => result.text());
-  win.eval(inline + '\n' + agent);
+  const scripts = [inline];
+  for (const script of win.document.querySelectorAll('script[src^="/assets/"]')) {
+    const content = await fetch(base + script.getAttribute('src'), { headers: { 'X-OpenReLife-Control': control } }).then(result => result.text());
+    scripts.push(content);
+  }
+  // A single eval preserves the shared global lexical scope of browser scripts.
+  win.eval(scripts.join('\n'));
   // outside-only intentionally disables inline attributes in jsdom. Bind the
   // product's actual handlers as a browser would, rather than replacing them.
   for (const element of win.document.querySelectorAll('[onclick]')) {
@@ -79,11 +84,11 @@ async function page() {
   return dom;
 }
 
-test('Command+Enter uses saved command; answers are text with safe frame links', async () => {
+test('Command+Enter and AI button use saved command; Markdown and previews stay safe', async () => {
   const dom = await page(); const win = dom.window; const doc = win.document;
   doc.getElementById('agentOpen').click();
   await until(() => doc.getElementById('agentCommand').value.length > 0);
-  const answer = `Fixture [source](openrelife://frame/${manifest.identifiers.meeting_first}) <img src=x onerror="window.compromised=true">`;
+  const answer = `## Fixture\n\n**Bold** and *italic*, with [source](openrelife://frame/${manifest.identifiers.meeting_first}).\n\n- First\n- Second\n\n| Time | Status |\n| --- | --- |\n| 10:00 | Joined |\n\n\`\`\`html\n<img src=x onerror="window.compromised=true">\n\`\`\`\n\n<img src=x onerror="window.compromised=true"><script>window.compromised=true</script> [unsafe](javascript:alert(1)) [external](https://example.com) ![remote](https://example.com/tracking.gif)`;
   const program = `import json; print(json.dumps({'answer': ${JSON.stringify(answer)}}))`;
   doc.getElementById('agentPreset').value = 'custom';
   doc.getElementById('agentPreset').dispatchEvent(new win.Event('change', { bubbles: true }));
@@ -95,12 +100,61 @@ test('Command+Enter uses saved command; answers are text with safe frame links',
   doc.getElementById('searchInput').dispatchEvent(event);
   assert.equal(event.defaultPrevented, true);
   await until(() => doc.getElementById('agentState').textContent.startsWith('completed'), 20000);
-  assert.match(doc.getElementById('agentAnswer').textContent, /Fixture source/);
+  assert.match(doc.getElementById('agentAnswer').textContent, /Fixture/);
   assert.match(doc.getElementById('agentAnswer').textContent, /No archive tools were used/);
+  assert.equal(doc.querySelector('#agentAnswer strong').textContent, 'Bold');
+  assert.equal(doc.querySelector('#agentAnswer em').textContent, 'italic');
+  assert.equal(doc.querySelectorAll('#agentAnswer li').length, 2);
+  assert.equal(doc.querySelector('#agentAnswer td').textContent, '10:00');
+  assert.match(doc.querySelector('#agentAnswer pre code').textContent, /<img src=x/);
   assert.equal(doc.querySelector('#agentAnswer img'), null);
+  assert.equal(doc.querySelector('#agentAnswer script'), null);
   assert.equal(win.compromised, undefined);
   assert.equal(doc.querySelectorAll('#agentAnswer a').length, 1);
   assert.equal(doc.getElementById('agentTraceDownload').hidden, false);
+  const source = doc.querySelector('#agentAnswer a');
+  source.dispatchEvent(new win.MouseEvent('mouseenter'));
+  await until(() => !doc.getElementById('agentFramePreview').hidden);
+  const thumbnail = doc.querySelector('#agentFramePreview img');
+  assert.equal(new URL(thumbnail.src).pathname, `/api/frames/${manifest.identifiers.meeting_first}/thumbnail`);
+  assert.equal(source.getAttribute('aria-describedby'), 'agentFramePreview');
+  const image = await fetch(thumbnail.src, { headers: { 'X-OpenReLife-Control': control } });
+  assert.equal(image.status, 200);
+  assert.equal(image.headers.get('content-type'), 'image/jpeg');
+  assert.equal(image.headers.get('cache-control'), 'private, no-store');
+  assert.equal((await fetch(thumbnail.src)).status, 403);
+  const decoded = await require('canvas').loadImage(Buffer.from(await image.arrayBuffer()));
+  assert.ok(decoded.width <= 480 && decoded.height <= 300);
+  thumbnail.dispatchEvent(new win.Event('error'));
+  assert.match(doc.getElementById('agentFramePreview').textContent, /unavailable/);
+  source.dispatchEvent(new win.MouseEvent('mouseleave'));
+  assert.equal(doc.getElementById('agentFramePreview').hidden, true);
+  source.focus();
+  assert.equal(doc.getElementById('agentFramePreview').hidden, false);
+  doc.getElementById('agentClose').click();
+  assert.equal(doc.getElementById('agentFramePreview').hidden, true);
+  assert.match(doc.getElementById('searchInput').placeholder, /\(CMD\+Enter to Ask AI\)$/);
+  assert.equal(doc.getElementById('agentOpen').parentElement.id, 'searchWrapper');
+  const priorRun = doc.getElementById('agentTraceDownload').href;
+  const withEvidence = `import json,os,urllib.request; connection=json.load(open(os.environ['OPENRELIFE_CONNECTION'])); request=urllib.request.Request(connection['url']+'/api/agent/tools',data=json.dumps({'tool':'find_frames','arguments':{'frame_ids':[${JSON.stringify(manifest.identifiers.meeting_first)}]}}).encode(),headers={'Content-Type':'application/json','Authorization':'Bearer '+os.environ['OPENRELIFE_RUN_TOKEN']}); json.load(urllib.request.urlopen(request)); print(json.dumps({'answer':${JSON.stringify(answer)}}))`;
+  doc.getElementById('agentCommand').value = `${JSON.stringify(python)} -c ${JSON.stringify(withEvidence)}`;
+  doc.getElementById('agentSave').click();
+  await until(async () => (await api('/api/agent/settings')).command.includes('urllib.request'));
+  doc.getElementById('searchInput').value = 'Synthetic AI button query';
+  doc.getElementById('agentOpen').click();
+  await until(() => doc.getElementById('agentTraceDownload').href !== priorRun && doc.getElementById('agentState').textContent.startsWith('completed'), 20000);
+  assert.equal(doc.getElementById('agentQuestion').value, 'Synthetic AI button query');
+  assert.equal(doc.getElementById('agentPanel').hidden, false);
+  const evidence = doc.querySelector('#agentEvidence a');
+  assert.ok(evidence);
+  evidence.dispatchEvent(new win.MouseEvent('mouseenter'));
+  await until(() => !doc.getElementById('agentFramePreview').hidden);
+  assert.match(doc.querySelector('#agentFramePreview img').src, new RegExp(manifest.identifiers.meeting_first));
+  evidence.dispatchEvent(new win.MouseEvent('mouseleave'));
+  evidence.dispatchEvent(new win.MouseEvent('mouseenter'));
+  evidence.dispatchEvent(new win.MouseEvent('mouseleave'));
+  await wait(300);
+  assert.equal(doc.getElementById('agentFramePreview').hidden, true);
   dom.window.close(); connections.delete(dom);
 });
 
@@ -152,6 +206,8 @@ test('App confirmation API deletes only reviewed fixture frames and purges deriv
     digest: preview.digest, frame_ids: preview.frame_ids });
   assert.equal(result.complete, true);
   assert.deepEqual(result.deleted, [manifest.identifiers.telegram_injection]);
+  const deletedThumbnail = await fetch(base + `/api/frames/${manifest.identifiers.telegram_injection}/thumbnail`, { headers: { 'X-OpenReLife-Control': control } });
+  assert.equal(deletedThumbnail.status, 404);
   const purged = await api('/api/agent/runs/' + proposed.run_id);
   assert.equal(purged.state, 'purged');
   assert.equal(purged.answer, '');
