@@ -8,6 +8,10 @@
 .agent-panel label { display:block; margin:12px 0; font-size:13px; }
 .agent-panel textarea,.agent-panel select,.agent-panel input { display:block; width:100%; margin-top:5px; padding:9px; background:#29292e; border:1px solid #555; color:#eee; border-radius:7px; font-size:13px; box-sizing:border-box; }
 .agent-panel button,.agent-delete-preview button { background:#34343c; color:#eee; padding:7px 11px; border:1px solid #666; border-radius:7px; cursor:pointer; }
+.agent-panel .agent-icon-button { display:inline-grid; place-items:center; flex:0 0 32px; width:32px; height:32px; min-width:32px; padding:0; line-height:1; border-radius:8px; border-color:#ffffff24; background:#ffffff08; color:#c9c9d2; appearance:none; transition:background .15s,color .15s,border-color .15s; }
+.agent-panel .agent-icon-button:hover { background:#ffffff14; color:#fff; border-color:#ffffff40; }
+.agent-panel .agent-icon-button:focus-visible { outline:2px solid #b5beff; outline-offset:3px; }
+.agent-icon-button svg { display:block; width:16px; height:16px; pointer-events:none; }
 .agent-panel button:disabled { opacity:.5; cursor:default; }
 .agent-panel details { border-top:1px solid #444; margin:16px 0; padding-top:12px; }
 .agent-panel summary { cursor:pointer; color:#bfc3d9; }

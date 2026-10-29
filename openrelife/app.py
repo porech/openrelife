@@ -1676,7 +1676,7 @@ def timeline_v2():
   
   <link rel="stylesheet" href="/assets/agents.css">
   <aside id="agentPanel" class="agent-panel" hidden>
-    <div class="agent-header"><strong>Ask your history</strong><button id="agentClose" aria-label="Close agent panel">×</button></div>
+    <div class="agent-header"><strong>Ask your history</strong><button type="button" id="agentClose" class="agent-icon-button" aria-label="Close agent panel" title="Close agent panel"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M4 4l8 8M12 4l-8 8"/></svg></button></div>
     <details id="agentSettings"><summary>Agent command and MCP connection</summary>
       <label>Preset<select id="agentPreset"><option value="codex">Codex</option><option value="claude">Claude</option><option value="custom">Custom command</option></select></label>
       <label>Command<textarea id="agentCommand" rows="4" spellcheck="false"></textarea></label>
