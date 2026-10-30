@@ -1348,7 +1348,19 @@ def timeline_v2():
     .perm-chip i { font-size: 15px; }
   </style>
 </head>
-<body>
+<body tabindex="-1">
+  <!-- Search bar -->
+  <div class="search-container">
+    <div class="search-wrapper" id="searchWrapper">
+      <input type="text" class="search-input" id="searchInput" placeholder="Search your history…"
+             role="combobox" aria-expanded="false" aria-controls="resultsGrid"
+             aria-autocomplete="list" autocomplete="off">
+      <i class="bi bi-search search-icon" id="searchIcon"></i>
+      <i class="bi bi-x-circle-fill clear-icon" id="searchClear" style="display: none;"></i>
+      <button type="button" id="agentOpen" class="search-agent-button" title="Ask AI (Command+Enter)" aria-label="Ask AI about your history (Command+Enter)">Ask AI</button>
+    </div>
+  </div>
+
   <div id="perm-chips"></div>
   <div class="settings-modal-overlay" id="permModalOverlay" onclick="if(event.target===this) closePermModal()">
     <div class="settings-modal" style="max-width: 460px;">
@@ -1427,18 +1439,6 @@ def timeline_v2():
       </div>
       <div class="palette-action muted danger" onmousedown="event.preventDefault()" onclick="paletteAction('quit')">
         <i class="bi bi-power"></i><span>Quit OpenReLife</span>
-      </div>
-    </div>
-
-    <!-- Search bar -->
-    <div class="search-container">
-      <div class="search-wrapper" id="searchWrapper">
-        <input type="text" class="search-input" id="searchInput" placeholder="Search your history…"
-               role="combobox" aria-expanded="false" aria-controls="resultsGrid"
-               aria-autocomplete="list" autocomplete="off">
-        <i class="bi bi-search search-icon" id="searchIcon"></i>
-        <i class="bi bi-x-circle-fill clear-icon" id="searchClear" style="display: none;"></i>
-        <button type="button" id="agentOpen" class="search-agent-button" title="Ask AI (Command+Enter)" aria-label="Ask AI about your history (Command+Enter)">Ask AI</button>
       </div>
     </div>
 
@@ -3309,6 +3309,12 @@ def timeline_v2():
 
         // Exit delete mode
         if (isDeleteMode) exitDeleteMode();
+
+        // Start the next Tab at the search bar when returning to the main view.
+        const foregroundInput = !document.getElementById('agentPanel').hidden ||
+          document.getElementById('settingsModalOverlay').classList.contains('show') ||
+          document.getElementById('permModalOverlay').classList.contains('show');
+        if (!foregroundInput) document.body.focus({ preventScroll: true });
       });
     }
 
