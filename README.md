@@ -48,7 +48,7 @@ The software is currently in active development (with a huge help from AI agents
 - **Auto-Pause**: Recording automatically pauses when you are inactive to save space.
 - **Incognito Detection**: Automatically detects incognito/private browsing mode on ALL visible browser windows (Chrome, Safari, Firefox, Edge, Arc, Brave, Opera, Vivaldi, and more). When detected, recording is paused to protect your privacy. This feature can be toggled in the settings.
 
-## Ask your history and connect an agent (1.1.9)
+## Ask your history and connect an agent (1.1.10)
 
 Press **Command+Enter** in the search bar, click **Ask AI** beside the search
 icon, or choose **Ask AI** in the Actions menu to ask the current question.
@@ -64,6 +64,8 @@ While a command runs, the question field is disabled and its border animates.
 Stop immediately restores editing and removes the animation; another run can
 start once the previous command has finished stopping. Reduced-motion settings
 keep the running border static.
+Escape closes the agent panel before hiding the app window, preserving the
+draft and leaving any active command running until it finishes or is stopped.
 
 The panel supports Markdown answers (including lists, tables and code), with
 hover/focus screenshot previews on citations and evidence links. Previews load
@@ -108,6 +110,14 @@ is bound to the exact reviewed snapshot; newly captured or newly matching
 frames are not silently included. If an agent appends to a proposal, the old
 preview cannot confirm it until reloaded.
 
+Pending proposals retain a link to the original request and its answer across
+app restarts. Opening an empty panel restores the latest available context
+without executing it again; **Show request** switches to a proposal's context.
+**Discard proposal** removes only that proposal, keeping screenshots and search
+data intact. Proposals from older versions whose context was not retained are
+explicitly marked as unavailable; their original prompt is not reconstructed
+from the agent's selection description.
+
 Within the supported macOS command runner, an outer OS sandbox prevents direct
 archive reads/writes, including resolved screenshot-directory symlinks. Archive
 access goes through the scoped MCP API. The desktop's separate mutation
@@ -124,8 +134,15 @@ directory. They record queries, redacted commands, public tool inputs, returned
 frame identifiers, output hashes, byte counts, timings, CLI events, failures,
 exit codes, cancellation and timeout. Image payloads are omitted from traces.
 No hidden model reasoning is reconstructed. Source-dependent in-app answers
-and traces are invalidated when their screenshots are deleted; older-session
-trace caches are conservatively discarded on deletion.
+and traces are invalidated when their screenshots are deleted. Saved proposal
+contexts retain bounded dependency maps across restarts, so unrelated deletion
+does not clear them. Older traces without a known map, and contexts whose full
+dependency map exceeds the limit, are conservatively invalidated on deletion.
+
+Proposal contexts are private snapshots (not executable sessions), limited to
+30 records, 2 MiB per record, 100 MiB overall and 30 days, pruned at startup and
+when new contexts are created. An unfinished request is restored as interrupted
+and is never automatically resumed.
 
 The runner permits one in-app run at a time, up to 150 tool calls and about
 30 MiB of tool responses per run. The default timeout is 300 seconds and can be

@@ -1,6 +1,7 @@
 """Public HTTP contract tests for archive tools and app-owned deletion."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import sqlite3
 import time
@@ -11,6 +12,23 @@ import pytest
 
 from openrelife import database
 from openrelife.agent import register_agent_routes
+
+
+def restart_api(api):
+    app = Flask('restarted-agent-contract')
+    service = register_agent_routes(app, api[5], 'fixture-control')
+    database._delete_observers[:] = [service.invalidate]
+    return app.test_client(), service
+
+
+def completed_proposal(api, stamp):
+    selection = tool(api, 'propose_deletion', frame_ids=[str(stamp)])
+    run = next(iter(api[1].runs.values()))
+    # Unit fixture for persisted response data. The real runner/restart path is
+    # exercised separately through the HTTP/UI acceptance test.
+    run.update(query='Select the meeting screenshot', answer='Fixture answer with evidence', state='completed', external=False)
+    api[1].trace(run, {'type': 'run_finished', 'state': 'completed', 'exit_code': 0})
+    return selection, run['run_id']
 
 
 @pytest.fixture
@@ -189,3 +207,110 @@ def test_gui_launch_path_discovers_user_cli(agent_api, monkeypatch):
     monkeypatch.setattr(Path, 'home', lambda: root)
     monkeypatch.setenv('PATH', '/usr/bin:/bin')
     assert service.settings()['available']['codex']
+
+
+def test_proposal_context_survives_restart_without_resuming_commands(agent_api):
+    stamp = 1_793_000_000_000_000; agent_api[4](stamp)
+    selection, run_id = completed_proposal(agent_api, stamp)
+    client, service = restart_api(agent_api)
+    data = client.get('/api/agent/selections', headers=agent_api[2]).get_json()['selections'][0]
+    assert data['run_id'] == run_id and data['context_available']
+    assert data['origin_query'] == 'Select the meeting screenshot'
+    context = client.get(f'/api/agent/runs/{run_id}', headers=agent_api[2]).get_json()
+    assert context['restored'] and context['query'] == data['origin_query']
+    assert context['answer'] == 'Fixture answer with evidence' and context['state'] == 'completed'
+    assert not service.runs
+    assert client.get(f'/api/agent/runs/{run_id}', headers=agent_api[3]).status_code == 403
+
+
+def test_discard_removes_only_the_proposal(agent_api):
+    client, _, control, agent, insert, root = agent_api
+    stamp = 1_793_000_000_000_000; insert(stamp)
+    selection, _ = completed_proposal(agent_api, stamp)
+    endpoint = '/api/agent/selections/' + selection['selection_id']
+    assert client.delete(endpoint, headers=agent).status_code == 403
+    assert client.post('/api/agent/tools', headers=agent, json={'tool': 'discard_selection', 'arguments': {'selection_id': selection['selection_id']}}).status_code == 400
+    assert client.delete(endpoint, headers=control).status_code == 200
+    assert not (root / 'agent/selections' / (selection['selection_id'] + '.json')).exists()
+    assert (root / 'screenshots' / f'{stamp}.webp').exists()
+    assert tool(agent_api, 'archive_status')['frames'] == 1
+
+
+def test_restored_context_survives_unrelated_deletion_but_purges_with_its_sources(agent_api):
+    first = 1_793_000_000_000_000; other = first + 10_000_000
+    agent_api[4](first); agent_api[4](other)
+    _, run_id = completed_proposal(agent_api, first)
+    client, _ = restart_api(agent_api)
+    database.delete_entries([other])
+    assert client.get(f'/api/agent/runs/{run_id}', headers=agent_api[2]).status_code == 200
+    assert (agent_api[5] / 'agent/traces' / (run_id + '.jsonl')).exists()
+    database.delete_entries([first])
+    assert client.get(f'/api/agent/runs/{run_id}', headers=agent_api[2]).status_code == 400
+    assert not (agent_api[5] / 'agent/contexts' / (run_id + '.json')).exists()
+    assert not (agent_api[5] / 'agent/traces' / (run_id + '.jsonl')).exists()
+
+
+def test_interrupted_context_is_restored_as_interrupted_and_legacy_context_is_explicit(agent_api):
+    stamp = 1_793_000_000_000_000; agent_api[4](stamp)
+    selection, run_id = completed_proposal(agent_api, stamp)
+    run = agent_api[1].runs[run_id]; run['state'] = 'running'
+    agent_api[1].trace(run, {'type': 'tool_result', 'tool': 'fixture', 'frame_ids': []})
+    client, service = restart_api(agent_api)
+    context = client.get(f'/api/agent/runs/{run_id}', headers=agent_api[2]).get_json()
+    assert context['state'] == 'interrupted' and 'not been resumed' in context['error']
+    assert not service.runs
+    path = agent_api[5] / 'agent/selections' / (selection['selection_id'] + '.json')
+    legacy = json.loads(path.read_text()); legacy.pop('run_id'); path.write_text(json.dumps(legacy))
+    result = client.get('/api/agent/selections', headers=agent_api[2]).get_json()['selections'][0]
+    assert not result['context_available'] and result['origin_query'] is None
+    assert result['count'] == 1
+
+
+def test_another_request_cannot_reassign_or_append_to_a_proposal(agent_api):
+    client, service, _, headers, insert, _ = agent_api
+    first = 1_793_000_000_000_000; insert(first); insert(first + 1)
+    selection = tool(agent_api, 'propose_deletion', frame_ids=[str(first)])
+    args = {'selection_id': selection['selection_id'], 'frame_ids': [str(first + 1)]}
+    other = headers | {'X-OpenReLife-Client': 'another-request'}
+    assert client.post('/api/agent/tools', headers=other, json={'tool': 'propose_deletion', 'arguments': args}).status_code == 400
+    assert client.post('/api/agent/tools', headers=headers, json={'tool': 'propose_deletion', 'arguments': args | {'_run_id': 'forged'}}).status_code == 400
+    assert service.archive.selection(selection['selection_id'])['count'] == 1
+
+
+def test_contexts_are_private_redacted_and_conservatively_invalidate_incomplete_dependencies(agent_api):
+    stamp = 1_793_000_000_000_000; agent_api[4](stamp)
+    _, run_id = completed_proposal(agent_api, stamp)
+    service = agent_api[1]; run = service.runs[run_id]
+    run.update(query='Question ' + service.control_token, answer='Bearer ' + service.read_token)
+    run['seen'].update(str(stamp + index) for index in range(10001))
+    service.trace(run, {'type': 'run_finished', 'state': 'completed'})
+    path = agent_api[5] / 'agent/contexts' / (run_id + '.json')
+    encoded = path.read_text()
+    assert service.control_token not in encoded and service.read_token not in encoded
+    assert path.stat().st_mode & 0o777 == 0o600
+    saved = json.loads(encoded)
+    assert len(saved['seen']) == 10000 and not saved['dependencies_complete']
+    _, restarted = restart_api(agent_api)
+    restarted.invalidate([])
+    assert path.exists()
+    restarted.invalidate([stamp - 1])
+    assert not path.exists()
+
+
+def test_saved_context_count_age_and_unknown_cache_cleanup_are_bounded(agent_api):
+    client, _, control, headers, insert, root = agent_api
+    stamp = 1_793_000_000_000_000; insert(stamp)
+    for index in range(31):
+        result = client.post('/api/agent/tools', headers=headers | {'X-OpenReLife-Client': f'context-{index}'},
+            json={'tool': 'propose_deletion', 'arguments': {'frame_ids': [str(stamp)]}})
+        assert result.status_code == 200
+    folder = root / 'agent/contexts'
+    assert len(list(folder.glob('*.json'))) == 30
+    expired = next(folder.glob('*.json')); old = time.time() - 31 * 86400
+    os.utime(expired, (old, old))
+    unknown = folder / ('a' * 32 + '.json'); unknown.write_text('{broken private context')
+    restarted_client, _ = restart_api(agent_api)
+    assert not expired.exists()
+    database.delete_entries([stamp])
+    assert not unknown.exists()
+    assert restarted_client.get('/api/agent/selections', headers=control).status_code == 200

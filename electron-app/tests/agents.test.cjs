@@ -34,6 +34,9 @@ before(async () => {
   manifest = JSON.parse(fs.readFileSync(path.join(root, 'fixture-manifest.json')));
   base = `http://127.0.0.1:${settings.server_port}`;
   log = fs.createWriteStream(path.join(root, 'backend.log'));
+  await startBackend();
+});
+async function startBackend() {
   backend = spawn(python, ['-m', 'openrelife.app', '--storage-path', path.join(root, 'archive'), '--no-capture'],
     { cwd: project, env: { ...process.env, OPENRELIFE_CONTROL_FD: '3', PYTHONDONTWRITEBYTECODE: '1' }, stdio: ['ignore', 'pipe', 'pipe', 'pipe'] });
   backend.stdio[3].end(control); backend.stdout.pipe(log, { end: false }); backend.stderr.pipe(log, { end: false });
@@ -41,13 +44,16 @@ before(async () => {
     if (backend.exitCode !== null) throw new Error('Fixture backend exited; ' + root);
     try { await api('/api/recording-status'); return true; } catch { return false; }
   }, 30000);
-});
-after(async () => {
-  for (const dom of connections) dom.window.close();
+}
+async function stopBackend() {
   if (backend && backend.exitCode === null) {
     backend.kill('SIGTERM'); await Promise.race([new Promise(resolve => backend.once('exit', resolve)), wait(3000)]);
     if (backend.exitCode === null) backend.kill('SIGKILL');
   }
+}
+after(async () => {
+  for (const dom of connections) dom.window.close();
+  await stopBackend();
   if (log) log.end();
   const output = path.join(project, 'logs/agent-dom-test-location.json');
   fs.writeFileSync(output, JSON.stringify({ artifact_directory: root, native_visual_test: false }, null, 2));
@@ -248,6 +254,26 @@ test('Ask AI locks the question while running and restores editing on Stop, comp
   dom.window.close(); connections.delete(dom);
 });
 
+test('Escape closes the Ask AI panel before hiding the app and preserves the draft', async () => {
+  const dom = await page(); const win = dom.window; const doc = win.document;
+  let hidden = 0;
+  win.electronAPI = { hideWindow: () => { hidden++; } };
+  doc.getElementById('agentOpen').click();
+  await until(() => !doc.getElementById('agentPanel').hidden);
+  const question = doc.getElementById('agentQuestion'); question.value = 'Keep this draft'; question.focus();
+  question.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', isComposing: true, bubbles: true, cancelable: true }));
+  assert.equal(doc.getElementById('agentPanel').hidden, false);
+  const escape = new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+  question.dispatchEvent(escape);
+  assert.equal(escape.defaultPrevented, true);
+  assert.equal(doc.getElementById('agentPanel').hidden, true);
+  assert.equal(question.value, 'Keep this draft');
+  assert.equal(hidden, 0);
+  doc.body.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  assert.equal(hidden, 1);
+  dom.window.close(); connections.delete(dom);
+});
+
 test('Deletion preview is a filtered timeline; adjustment and cancellation do not delete', async () => {
   const connection = JSON.parse(fs.readFileSync(path.join(root, 'archive/agent-connection.json')));
   const selected = [manifest.identifiers.telegram_native, manifest.identifiers.telegram_web];
@@ -256,8 +282,8 @@ test('Deletion preview is a filtered timeline; adjustment and cancellation do no
   const before = await api('/api/agent/tools', { tool: 'archive_status', arguments: {} }, { Authorization: 'Bearer ' + connection.read_token });
   const dom = await page(); const win = dom.window; const doc = win.document;
   doc.getElementById('agentOpen').click();
-  await until(() => doc.querySelector('#agentSelections button'));
-  doc.querySelector('#agentSelections button').click();
+  await until(() => doc.querySelector('#agentSelections button[data-action="review"]'));
+  doc.querySelector('#agentSelections button[data-action="review"]').click();
   await until(() => doc.getElementById('agentDeletePreview').hidden === false);
   assert.equal(doc.getElementById('timelineSlider').max, '1');
   const previews = [...doc.querySelectorAll('#agentDeleteThumbs img')].map(image => image.src.split('/').at(-1).replace('.webp', ''));
@@ -277,8 +303,23 @@ test('Deletion preview is a filtered timeline; adjustment and cancellation do no
   await until(() => doc.getElementById('agentDeletePreview').hidden === true);
   assert.equal(doc.getElementById('timelineSlider').max, String(before.frames - 1));
   doc.getElementById('agentOpen').click();
-  await until(() => doc.querySelector('#agentSelections button'));
-  doc.querySelector('#agentSelections button').click();
+  await until(() => doc.querySelector('#agentSelections button[data-action="review"]'));
+  doc.querySelector('#agentSelections button[data-action="review"]').click();
+  await until(() => doc.getElementById('agentDeletePreview').hidden === false);
+  let hiddenWindows = 0;
+  win.electronAPI = { hideWindow: () => { hiddenWindows++; } };
+  doc.getElementById('agentOpen').click();
+  await until(() => doc.getElementById('agentPanel').hidden === false);
+  doc.body.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  assert.equal(doc.getElementById('agentPanel').hidden, true);
+  assert.equal(doc.getElementById('agentDeletePreview').hidden, false);
+  doc.body.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  assert.equal(doc.getElementById('agentDeletePreview').hidden, true);
+  assert.equal(hiddenWindows, 0);
+  assert.equal((await api('/api/agent/tools', { tool: 'archive_status', arguments: {} }, { Authorization: 'Bearer ' + connection.read_token })).frames, before.frames);
+  doc.getElementById('agentOpen').click();
+  await until(() => doc.querySelector('#agentSelections button[data-action="review"]'));
+  doc.querySelector('#agentSelections button[data-action="review"]').click();
   await until(() => doc.getElementById('agentDeletePreview').hidden === false);
   win.goToTimestamp(Number(manifest.identifiers.unrelated));
   assert.equal(doc.getElementById('agentDeletePreview').hidden, true);
@@ -305,4 +346,45 @@ test('App confirmation API deletes only reviewed fixture frames and purges deriv
     { Authorization: 'Bearer ' + connection.read_token, 'X-OpenReLife-Client': 'post-confirmation' });
   assert.deepEqual(remaining.missing, [manifest.identifiers.telegram_injection]);
   assert.equal(remaining.frames[0].frame_id, manifest.identifiers.telegram_docs);
+});
+
+test('A real runner proposal restores its request after backend restart and can be discarded without deletion', async () => {
+  let dom = await page(); let win = dom.window; let doc = win.document;
+  const answer = '**Restored response** with the meeting evidence.';
+  const program = `import json,os,urllib.request; connection=json.load(open(os.environ['OPENRELIFE_CONNECTION'])); request=urllib.request.Request(connection['url']+'/api/agent/tools',data=json.dumps({'tool':'propose_deletion','arguments':{'frame_ids':[${JSON.stringify(manifest.identifiers.meeting_first)}],'reason':'Meeting history fixture'}}).encode(),headers={'Content-Type':'application/json','Authorization':'Bearer '+os.environ['OPENRELIFE_RUN_TOKEN']}); json.load(urllib.request.urlopen(request)); print(json.dumps({'answer':${JSON.stringify(answer)}}))`;
+  await api('/api/agent/settings', { preset: 'custom', command: `${JSON.stringify(python)} -c ${JSON.stringify(program)}`, timeout_seconds: 60 });
+  doc.getElementById('agentOpen').click();
+  await until(() => doc.getElementById('agentCommand').value.length > 0);
+  const query = 'Select the meeting screenshot for review';
+  doc.getElementById('agentQuestion').value = query; doc.getElementById('agentStart').click();
+  await until(() => doc.getElementById('agentState').textContent.startsWith('completed'));
+  const proposal = (await api('/api/agent/selections')).selections.find(item => item.origin_query === query);
+  assert.ok(proposal && proposal.context_available);
+  const imagePath = path.join(root, 'archive/screenshots', manifest.identifiers.meeting_first + '.webp');
+  const before = fs.readFileSync(imagePath);
+  dom.window.close(); connections.delete(dom);
+  await stopBackend(); await startBackend();
+  dom = await page(); win = dom.window; doc = win.document;
+  let started = 0;
+  const originalFetch = win.fetch;
+  win.fetch = (url, options = {}) => {
+    if (url === '/api/agent/runs' && options.method === 'POST') started++;
+    return originalFetch(url, options);
+  };
+  doc.getElementById('agentOpen').click();
+  await until(() => doc.getElementById('agentState').textContent.startsWith('Restored'));
+  assert.equal(doc.getElementById('agentQuestion').value, query);
+  assert.equal(doc.querySelector('#agentAnswer strong').textContent, 'Restored response');
+  assert.equal(doc.getElementById('agentQuestion').disabled, false);
+  await wait(1100);
+  assert.equal(started, 0, 'Restoring history must not execute the prompt again');
+  const card = doc.querySelector(`[data-selection-id="${proposal.selection_id}"]`);
+  assert.match(card.textContent, /Request: Select the meeting screenshot/);
+  [...card.querySelectorAll('button')].find(button => button.textContent === 'Discard proposal').click();
+  await until(() => !doc.querySelector(`[data-selection-id="${proposal.selection_id}"]`));
+  assert.deepEqual(fs.readFileSync(imagePath), before);
+  const connection = JSON.parse(fs.readFileSync(path.join(root, 'archive/agent-connection.json')));
+  const frames = await api('/api/agent/tools', { tool: 'find_frames', arguments: { frame_ids: [manifest.identifiers.meeting_first] } }, { Authorization: 'Bearer ' + connection.read_token });
+  assert.equal(frames.total, 1);
+  dom.window.close(); connections.delete(dom);
 });

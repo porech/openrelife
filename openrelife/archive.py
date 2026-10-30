@@ -187,11 +187,11 @@ class Archive:
                 'next_offset': offset + limit if len(rows) > limit else None,
                 'note': 'Groups are based on matching captured frames; inspect neighbors before inferring event boundaries.'}
 
-    def propose_deletion(self, frame_ids=None, intervals=None, reason='', selection_id=None):
+    def propose_deletion(self, frame_ids=None, intervals=None, reason='', selection_id=None, _run_id=None):
         with self._delete_lock:
-            return self._propose_deletion(frame_ids, intervals, reason, selection_id)
+            return self._propose_deletion(frame_ids, intervals, reason, selection_id, _run_id)
 
-    def _propose_deletion(self, frame_ids=None, intervals=None, reason='', selection_id=None):
+    def _propose_deletion(self, frame_ids=None, intervals=None, reason='', selection_id=None, _run_id=None):
         frame_ids, intervals = frame_ids or [], intervals or []
         if len(frame_ids) > 5000 or len(intervals) > 50 or not (frame_ids or intervals):
             raise ValueError('Provide up to 5000 instants or 50 disjoint intervals')
@@ -223,6 +223,8 @@ class Archive:
             frames.append({'id': rid, 'timestamp': stamp, 'identity': identity})
         if selection_id:
             manifest = self._manifest(selection_id)
+            if manifest.get('run_id') and manifest['run_id'] != _run_id:
+                raise ValueError('This proposal belongs to another request; create a new proposal')
             if manifest.get('deleted_at'):
                 raise ValueError('This selection was already confirmed; create a new proposal')
             combined = {row['timestamp']: row for row in frames}
@@ -233,6 +235,8 @@ class Archive:
             manifest.update(frames=frames, reason=str(reason or manifest['reason'])[:2000], updated_at=time.time())
         else:
             manifest = {'selection_id': secrets.token_hex(16), 'created_at': time.time(), 'reason': str(reason)[:2000], 'frames': frames}
+        if _run_id:
+            manifest['run_id'] = _run_id
         manifest['digest'] = hashlib.sha256(json.dumps(frames, sort_keys=True).encode()).hexdigest()
         self.selections.mkdir(parents=True, exist_ok=True)
         path = self.selections / f"{manifest['selection_id']}.json"
@@ -260,6 +264,13 @@ class Archive:
             'frame_bytes': {str(row['timestamp']): row['identity'][0] if row['identity'] else 0 for row in manifest['frames']},
             'count': len(manifest['frames']), 'bytes': sum(row['identity'][0] for row in manifest['frames'] if row['identity']),
             'requires_app_confirmation': not bool(manifest.get('deleted_at'))}
+
+    def discard_selection(self, selection_id):
+        """Remove only the proposal manifest, never screenshots or database rows."""
+        with self._delete_lock:
+            manifest = self._manifest(selection_id)
+            (self.selections / f'{selection_id}.json').unlink(missing_ok=True)
+            return manifest.get('run_id')
 
     def delete_reviewed(self, selection_id, digest, frame_ids):
         """App-only operation. Never register this method as an agent/MCP tool."""

@@ -18,6 +18,7 @@ import time
 from flask import jsonify, request
 
 from openrelife.archive import Archive
+from openrelife.agent_history import RunContexts
 
 PRESETS = {
     'codex': 'codex exec --ignore-user-config --ignore-rules --ephemeral --skip-git-repo-check --sandbox read-only --json -c features.shell_tool=false -c features.unified_exec=false',
@@ -44,6 +45,7 @@ class AgentService:
         self.runs = {}
         self.tokens = {}
         self.lock = threading.RLock()
+        self.contexts = RunContexts(self.storage)
         self.workspace_root = Path(tempfile.gettempdir()) / 'openrelife-agent-workspaces'
 
     def publish_connection(self, port):
@@ -95,7 +97,7 @@ class AgentService:
 
     def _new_run(self, query, external=False):
         run_id = secrets.token_hex(16)
-        run = {'run_id': run_id, 'query': query, 'state': 'external' if external else 'starting',
+        run = {'run_id': run_id, 'query': query, 'external': external, 'state': 'external' if external else 'starting',
                'started_at': time.time(), 'answer': '', 'events': deque(maxlen=200),
                'tool_events': deque(maxlen=60),
                'seen': set(), 'selections': [], 'tool_calls': 0, 'returned_bytes': 0,
@@ -144,6 +146,8 @@ class AgentService:
             event = {'at': event['at'], 'type': 'oversized_event', 'original_type': event.get('type'), 'bytes': len(encoded)}
             encoded = json.dumps(event)
         with self.lock:
+            if run.get('state') == 'purged':
+                return
             run['events'].append(event)
             if event.get('type') != 'agent_event':
                 run['tool_events'].append(event)
@@ -153,6 +157,11 @@ class AgentService:
                 with path.open('a') as stream:
                     os.chmod(path, 0o600); stream.write(encoded + '\n')
                 run['trace_bytes'] += len(encoded) + 1
+            if event.get('type') in ('tool_result', 'run_finished', 'run_error', 'proposal_discarded'):
+                try:
+                    self.contexts.save(run, redact(self._run_summary(run)))
+                except (OSError, ValueError) as error:
+                    run['context_warning'] = f'Could not save request context: {error}'
 
     def tool(self, token, client_id, name, arguments):
         with self.lock:
@@ -172,7 +181,8 @@ class AgentService:
         tools = {'archive_status': self.archive.status, 'find_frames': self.archive.find_frames,
                  'semantic_search': self.archive.semantic_search, 'read_frames': self.archive.read_frames,
                  'view_frame': self.archive.image, 'neighboring_frames': self.archive.neighbors,
-                 'find_intervals': self.archive.intervals, 'propose_deletion': self.archive.propose_deletion}
+                 'find_intervals': self.archive.intervals,
+                 'propose_deletion': lambda **args: self.archive.propose_deletion(**args, _run_id=run['run_id'])}
         if name not in tools:
             raise ValueError('Unknown or forbidden agent tool')
         if run['tool_calls'] >= 150 or run['returned_bytes'] >= 30 * 1024 * 1024:
@@ -226,9 +236,39 @@ class AgentService:
         return self.public_run(run['run_id'])
 
     def public_run(self, run_id):
-        run = self.runs[run_id]
-        return {key: run.get(key) for key in ('run_id', 'query', 'state', 'started_at', 'finished_at', 'answer', 'error', 'exit_code', 'tool_calls', 'returned_bytes', 'selections')} | {
+        if run_id not in self.runs:
+            return self.contexts.get(run_id)
+        return self._run_summary(self.runs[run_id])
+
+    def _run_summary(self, run):
+        return {key: run.get(key) for key in ('run_id', 'query', 'external', 'state', 'started_at', 'finished_at', 'answer', 'error', 'exit_code', 'tool_calls', 'returned_bytes', 'selections', 'context_warning')} | {
             'events': list(run['tool_events'])[-30:], 'evidence_frame_ids': sorted(run['seen'])[:500]}
+
+    def selection_info(self, selection_id):
+        selection = self.archive.selection(selection_id)
+        context = None
+        if selection.get('run_id'):
+            try:
+                context = self.public_run(selection['run_id'])
+                if context['state'] == 'purged':
+                    context = None
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
+        return selection | {'context_available': context is not None,
+                            'origin_query': (context['query'][:320] if not context.get('external') else 'External MCP session') if context else None}
+
+    def discard_selection(self, selection_id):
+        run_id = self.archive.discard_selection(selection_id)
+        if run_id in self.runs:
+            run = self.runs[run_id]
+            run['selections'] = [value for value in run['selections'] if value != selection_id]
+            self.trace(run, {'type': 'proposal_discarded', 'selection_id': selection_id})
+        elif run_id:
+            try:
+                self.contexts.discard_reference(run_id, selection_id)
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
+        return {'discarded': selection_id}
 
     def cancel(self, run_id):
         run = self.runs[run_id]; run['cancel'].set()
@@ -242,15 +282,21 @@ class AgentService:
 
     def invalidate(self, timestamps):
         deleted = {str(value) for value in timestamps}
-        for run in list(self.runs.values()):
-            if run['seen'] & deleted:
-                self.cancel(run['run_id']); run.update(state='purged', answer='', query='', seen=set(), selections=[], events=deque(maxlen=200), tool_events=deque(maxlen=60))
-                (self.storage / 'agent' / 'traces' / f"{run['run_id']}.jsonl").unlink(missing_ok=True)
-        # Traces from earlier app sessions have no resident dependency map.
-        # Discard those derived caches rather than retaining deleted OCR in them.
-        for path in (self.storage / 'agent' / 'traces').glob('*.jsonl'):
-            if path.stem not in self.runs:
-                path.unlink(missing_ok=True)
+        if not deleted:
+            return
+        with self.lock:
+            affected = self.contexts.invalidate(deleted)
+            affected.update(run['run_id'] for run in self.runs.values() if run['seen'] & deleted)
+            for run_id in affected:
+                if run_id in self.runs:
+                    run = self.runs[run_id]
+                    self.cancel(run_id)
+                    run.update(state='purged', answer='', query='', seen=set(), selections=[], events=deque(maxlen=200), tool_events=deque(maxlen=60))
+                (self.storage / 'agent' / 'traces' / f'{run_id}.jsonl').unlink(missing_ok=True)
+            # Older traces without a known dependency map remain conservative caches.
+            for path in (self.storage / 'agent' / 'traces').glob('*.jsonl'):
+                if path.stem not in self.runs and path.stem not in self.contexts.index:
+                    path.unlink(missing_ok=True)
 
     def _profile(self):
         root = self.storage.resolve()
@@ -440,11 +486,11 @@ def register_agent_routes(app, storage, control_token=None):
     @app.route('/api/agent/selections', methods=['GET'])
     def agent_selections():
         paths = sorted(service.archive.selections.glob('*.json'), key=lambda path: path.stat().st_mtime, reverse=True)[:20]
-        return response(lambda: {'selections': [service.archive.selection(path.stem) for path in paths]})
+        return response(lambda: {'selections': [service.selection_info(path.stem) for path in paths]})
 
-    @app.route('/api/agent/selections/<selection_id>', methods=['GET'])
+    @app.route('/api/agent/selections/<selection_id>', methods=['GET', 'DELETE'])
     def agent_selection(selection_id):
-        return response(lambda: service.archive.selection(selection_id))
+        return response(lambda: service.discard_selection(selection_id) if request.method == 'DELETE' else service.selection_info(selection_id))
 
     @app.route('/api/agent/selections/<selection_id>/delete', methods=['POST'])
     def agent_delete(selection_id):

@@ -52,6 +52,8 @@
 .agent-panel a { color:#b5beff; }
 .agent-evidence-link { display:inline-block; margin:4px; padding:4px 7px; border:1px solid #555; border-radius:5px; font-size:12px; }
 .agent-selection-card { margin-top:12px; padding:12px; border:1px solid #a66b37; border-radius:8px; background:#33251b; }
+.agent-selection-origin { color:#f0cda9; font-size:12px; }
+.agent-selection-actions { display:flex; flex-wrap:wrap; gap:8px; }
 .agent-delete-preview { position:fixed; bottom:116px; left:50%; transform:translateX(-50%); width:min(750px,94vw); padding:12px 16px; border:1px solid #b35c5c; border-radius:12px; background:#25191af2; color:#eee; z-index:200; font-size:12px; }
 #agentDeleteSummary { display:block; margin:3px 0; color:#e9b8b8; }
 .agent-delete-thumbs { display:flex; gap:5px; overflow-x:auto; margin:8px 0; }

@@ -2117,6 +2117,7 @@ def timeline_v2():
     
     // Global Key Handler
     document.addEventListener('keydown', (e) => {
+      if (e.isComposing) return;
       if (e.key === 'Escape') {
          let handled = false;
 

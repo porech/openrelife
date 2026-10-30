@@ -30,15 +30,20 @@
       el('agentTimeout').value = settings.timeout_seconds;
       el('agentMcpCommand').textContent = settings.mcp_command.map(argument => JSON.stringify(argument)).join(' ');
     }
-    await loadSelections();
+    const selections = await loadSelections();
+    if (!activeRun && !busy && !el('agentQuestion').value) {
+      const latest = selections.find(item => item.context_available);
+      if (latest) await restoreContext(latest.run_id);
+    }
     if (!busy && !el('agentQuestion').value) el('agentQuestion').value = searchInput.value;
     el('agentQuestion').focus();
   }
   function askFromSearch() {
     if (busy) { openPanel().catch(message); return; }
-    el('agentQuestion').value = searchInput.value;
+    const query = searchInput.value;
+    el('agentQuestion').value = query;
     clearTimeout(searchTimeout); resetSearchState(); hidePaletteActions();
-    openPanel().then(() => { if (el('agentQuestion').value.trim()) return start(); }).catch(message);
+    openPanel().then(() => { if (query.trim()) return start(); }).catch(message);
   }
   el('agentOpen').onclick = askFromSearch;
   el('agentPaletteAsk').onclick = askFromSearch;
@@ -158,7 +163,7 @@
     const running = ['starting', 'running'].includes(run.state);
     if (!running) { completedRun = run.run_id; stopping = false; }
     setRunState(running);
-    message(`${run.state} · ${run.tool_calls} tool calls · ${(run.returned_bytes / 1024).toFixed(0)} KB read`);
+    message(`${run.restored ? 'Restored · ' : ''}${run.state} · ${run.tool_calls} tool calls · ${(run.returned_bytes / 1024).toFixed(0)} KB read${run.context_warning ? ' · Context could not be saved' : ''}`);
     const ungrounded = run.state === 'completed' && !run.tool_calls ? 'No archive tools were used. Check the command’s MCP connection before relying on this answer.\n\n' : '';
     renderAnswer(ungrounded + (run.error ? `${run.answer || ''}\n${run.error}` : run.answer || (running ? 'Looking for evidence…' : '')));
     el('agentTrace').textContent = (run.events || []).map(event => {
@@ -184,13 +189,41 @@
   async function loadSelections() {
     const data = await api('/api/agent/selections');
     const target = el('agentSelections'); target.replaceChildren();
-    for (const selection of data.selections.filter(item => item.requires_app_confirmation && item.count)) {
+    const pending = data.selections.filter(item => item.requires_app_confirmation && item.count);
+    for (const selection of pending) {
       const card = document.createElement('div'); card.className = 'agent-selection-card';
+      card.dataset.selectionId = selection.selection_id;
+      const origin = document.createElement('p'); origin.className = 'agent-selection-origin';
+      origin.textContent = selection.context_available ? `Request: ${selection.origin_query}` : 'Original request unavailable — this proposal has no saved context.';
       const description = document.createElement('p'); description.textContent = `${selection.count} frames · ${size(selection.bytes)}\n${selection.reason}`;
+      const actions = document.createElement('div'); actions.className = 'agent-selection-actions';
+      if (selection.context_available) {
+        const context = document.createElement('button'); context.textContent = 'Show request'; context.disabled = busy;
+        context.onclick = () => restoreContext(selection.run_id).catch(message); actions.append(context);
+      }
       const button = document.createElement('button'); button.textContent = 'Review deletion timeline';
+      button.dataset.action = 'review';
       button.onclick = () => preview(selection.selection_id).catch(message);
-      card.append(description, button); target.append(card);
+      const discard = document.createElement('button'); discard.textContent = 'Discard proposal'; discard.disabled = busy;
+      discard.onclick = async () => {
+        discard.disabled = true;
+        try {
+          await api(`/api/agent/selections/${selection.selection_id}`, null, 'DELETE');
+          if (ui.preview?.selection_id === selection.selection_id) exitPreview();
+          await loadSelections();
+        } catch (error) { discard.disabled = false; message(error); }
+      };
+      actions.append(button, discard); card.append(origin, description, actions); target.append(card);
     }
+    return pending;
+  }
+  async function restoreContext(runId) {
+    if (busy) { message('Stop the current request before opening another one'); return; }
+    const run = await api(`/api/agent/runs/${runId}`);
+    activeRun = run.run_id; completedRun = null;
+    el('agentQuestion').value = run.external ? '' : run.query;
+    renderRun(run);
+    if (run.external) message('Restored external MCP activity. The original prompt is kept by its client.');
   }
   async function preview(identifier) {
     hideFramePreview();
@@ -255,7 +288,12 @@
     } catch (error) { alert(error.message); button.disabled = false; }
   }
   document.addEventListener('keydown', event => {
+    if (event.isComposing) return;
     if (event.key === 'Escape') hideFramePreview();
+    if (event.key === 'Escape' && !el('agentPanel').hidden) {
+      event.preventDefault(); event.stopImmediatePropagation(); el('agentClose').click();
+      return;
+    }
     if (event.key === 'Escape' && ui.preview) {
       event.preventDefault(); event.stopImmediatePropagation(); exitPreview();
     }
