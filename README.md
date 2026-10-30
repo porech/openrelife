@@ -48,16 +48,22 @@ The software is currently in active development (with a huge help from AI agents
 - **Auto-Pause**: Recording automatically pauses when you are inactive to save space.
 - **Incognito Detection**: Automatically detects incognito/private browsing mode on ALL visible browser windows (Chrome, Safari, Firefox, Edge, Arc, Brave, Opera, Vivaldi, and more). When detected, recording is paused to protect your privacy. This feature can be toggled in the settings.
 
-## Ask your history and connect an agent (1.1.6)
+## Ask your history and connect an agent (1.1.9)
 
-Press **Command+Enter** in the search bar, or click **AI** beside the search
-icon, to ask the current question. With an empty search, the button opens the
-agent panel. Under **Agent command and MCP connection**, choose the editable
+Press **Command+Enter** in the search bar, click **Ask AI** beside the search
+icon, or choose **Ask AI** in the Actions menu to ask the current question.
+With an empty search, the button opens the agent panel. Under
+**Agent command and MCP connection**, choose the editable
 Codex or Claude preset, or enter a custom command, then save it. Use the CLI's
 existing login; OpenReLife does not require a separate model API integration.
 The chosen command may use a cloud model: retrieved OCR and images are then
 sent through that command to its configured provider. Local capture, ordinary
 search and OCR continue to work without an agent or cloud model.
+
+While a command runs, the question field is disabled and its border animates.
+Stop immediately restores editing and removes the animation; another run can
+start once the previous command has finished stopping. Reduced-motion settings
+keep the running border static.
 
 The panel supports Markdown answers (including lists, tables and code), with
 hover/focus screenshot previews on citations and evidence links. Previews load

@@ -1,8 +1,11 @@
-.search-input { padding-right:88px; }
+.search-input { padding-right:116px; }
 .search-agent-button { position:absolute; right:41px; top:50%; transform:translateY(-50%); border:1px solid #8992f052; border-radius:8px; background:#8c96ff1a; color:#cbd0ff; padding:3px 7px; font:600 11px/1.4 -apple-system,BlinkMacSystemFont,sans-serif; letter-spacing:.02em; cursor:pointer; }
 .search-agent-button:hover { background:#8c96ff38; border-color:#a4adff88; }
 .search-agent-button:focus-visible { outline:2px solid #b5beff; outline-offset:3px; }
-.agent-panel { position:fixed; top:0; right:0; bottom:0; width:min(460px,100vw); z-index:8000; background:#1b1b1f; color:#eee; border-left:1px solid #444; box-shadow:-12px 0 40px #0008; padding:20px; overflow-y:auto; font:14px/1.5 -apple-system,BlinkMacSystemFont,sans-serif; }
+.agent-panel { position:fixed; top:0; right:0; bottom:0; width:min(640px,100vw); z-index:8000; background:#1b1b1f; color:#eee; border-left:1px solid #444; box-shadow:-12px 0 40px #0008; padding:24px; overflow-y:auto; font:14px/1.5 -apple-system,BlinkMacSystemFont,sans-serif; }
+#agentPaletteAsk { width:100%; border:0; background:transparent; text-align:left; font-family:inherit; }
+#agentPaletteAsk:hover,#agentPaletteAsk:focus-visible { background:#ffffff17; }
+.agent-shortcut { margin-left:auto; padding:2px 6px; border:1px solid #ffffff20; border-radius:5px; background:#ffffff08; color:#aeb3c6; font:11px/1.4 -apple-system,BlinkMacSystemFont,sans-serif; }
 .agent-panel[hidden],.agent-delete-preview[hidden] { display:none; }
 .agent-header { display:flex; align-items:center; justify-content:space-between; font-size:20px; margin-bottom:18px; }
 .agent-panel label { display:block; margin:12px 0; font-size:13px; }
@@ -18,6 +21,13 @@
 .agent-panel pre { white-space:pre-wrap; overflow-wrap:anywhere; color:#bbb; background:#141417; padding:10px; max-height:240px; overflow-y:auto; font-size:11px; }
 .agent-help { color:#aaa; font-size:12px; margin:10px 0; }
 .agent-actions { display:flex; align-items:center; gap:10px; }
+.agent-question-field { position:relative; border-radius:9px; isolation:isolate; margin-bottom:14px; }
+.agent-question-field textarea { margin:0; min-height:112px; resize:vertical; }
+.agent-question-field textarea:disabled { color:#d6d6e5; opacity:1; cursor:wait; background:#25252d; border-color:#8882c855; }
+@property --agent-glow-angle { syntax:"<angle>"; initial-value:0deg; inherits:false; }
+.agent-question-field.is-running::after { content:""; position:absolute; inset:-2px; border-radius:11px; padding:2px; pointer-events:none; background:conic-gradient(from var(--agent-glow-angle),#8b7dff,#76dce4,#dd9aff,#8b7dff); -webkit-mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0); -webkit-mask-composite:xor; mask-composite:exclude; animation:agent-magic-border 3s linear infinite; filter:drop-shadow(0 0 5px #a392ff66); }
+@keyframes agent-magic-border { to { --agent-glow-angle:360deg; } }
+@media(prefers-reduced-motion:reduce) { .agent-question-field.is-running::after { animation:none; } }
 #agentStart { background:#5665cf; border-color:#7482ee; }
 #agentState { color:#bbb; font-size:12px; }
 .agent-answer { overflow-wrap:anywhere; margin:20px 0; }

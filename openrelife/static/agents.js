@@ -3,6 +3,7 @@
   const el = id => document.getElementById(id);
   let settings, activeRun, timer, originalTimeline, lastAnswer, lastEvidence;
   let hoverTimer, previewLink;
+  let busy = false, stopping = false, completedRun;
   const ui = window.openrelifeAgentUI = { preview: null, exitPreview, confirmSelection };
   const framePreview = document.createElement('div');
   framePreview.id = 'agentFramePreview'; framePreview.className = 'agent-frame-preview';
@@ -30,15 +31,17 @@
       el('agentMcpCommand').textContent = settings.mcp_command.map(argument => JSON.stringify(argument)).join(' ');
     }
     await loadSelections();
-    if (!el('agentQuestion').value) el('agentQuestion').value = searchInput.value;
+    if (!busy && !el('agentQuestion').value) el('agentQuestion').value = searchInput.value;
     el('agentQuestion').focus();
   }
   function askFromSearch() {
+    if (busy) { openPanel().catch(message); return; }
     el('agentQuestion').value = searchInput.value;
     clearTimeout(searchTimeout); resetSearchState(); hidePaletteActions();
     openPanel().then(() => { if (el('agentQuestion').value.trim()) return start(); }).catch(message);
   }
   el('agentOpen').onclick = askFromSearch;
+  el('agentPaletteAsk').onclick = askFromSearch;
   el('agentClose').onclick = () => { hideFramePreview(); el('agentPanel').hidden = true; };
   searchInput.addEventListener('keydown', event => {
     if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
@@ -57,19 +60,46 @@
     } catch (error) { message(error); }
   };
   el('agentStart').onclick = () => start().catch(message);
-  el('agentCancel').onclick = () => {
-    if (activeRun) api(`/api/agent/runs/${activeRun}`, null, 'DELETE').then(renderRun).catch(message);
+  function setRunState(running) {
+    busy = running;
+    const locked = running && !stopping;
+    el('agentQuestion').disabled = locked;
+    el('agentQuestionField').classList.toggle('is-running', locked);
+    el('agentQuestionField').setAttribute('aria-busy', String(locked));
+    el('agentStart').disabled = running;
+    el('agentCancel').hidden = !running;
+    el('agentCancel').disabled = stopping || !activeRun;
+    el('agentCancel').textContent = stopping ? 'Stopping…' : 'Stop';
+  }
+  el('agentCancel').onclick = async () => {
+    if (!activeRun || !busy || stopping) return;
+    const runId = activeRun;
+    stopping = true; setRunState(true); el('agentQuestion').focus();
+    try {
+      const run = await api(`/api/agent/runs/${runId}`, null, 'DELETE');
+      if (busy) renderRun(run);
+    } catch (error) {
+      if (activeRun !== runId || !busy) return;
+      stopping = false; setRunState(true); message(error);
+    }
   };
   async function start() {
+    if (busy) return;
     if (!el('agentQuestion').value.trim()) { message('Enter a question'); return; }
-    const run = await api('/api/agent/runs', { query: el('agentQuestion').value });
-    activeRun = run.run_id;
-    if (timer) clearInterval(timer);
-    renderRun(run);
-    timer = setInterval(async () => {
-      try { renderRun(await api(`/api/agent/runs/${activeRun}`)); }
-      catch (error) { clearInterval(timer); timer = null; el('agentStart').disabled = false; el('agentCancel').hidden = true; message(error); }
-    }, 1000);
+    const query = el('agentQuestion').value;
+    if (timer) clearInterval(timer); timer = null;
+    activeRun = null; stopping = false; setRunState(true);
+    try {
+      const run = await api('/api/agent/runs', { query });
+      activeRun = run.run_id;
+      renderRun(run);
+      if (!busy) return;
+      const runId = activeRun;
+      timer = setInterval(async () => {
+        try { renderRun(await api(`/api/agent/runs/${runId}`)); }
+        catch (error) { if (activeRun === runId) message(error); }
+      }, 1000);
+    } catch (error) { setRunState(false); throw error; }
   }
   function hideFramePreview() {
     clearTimeout(hoverTimer);
@@ -124,9 +154,10 @@
     target.replaceChildren(fragment);
   }
   function renderRun(run) {
-    if (activeRun && run.run_id !== activeRun) return;
+    if (run.run_id === completedRun || (activeRun && run.run_id !== activeRun)) return;
     const running = ['starting', 'running'].includes(run.state);
-    el('agentStart').disabled = running; el('agentCancel').hidden = !running;
+    if (!running) { completedRun = run.run_id; stopping = false; }
+    setRunState(running);
     message(`${run.state} · ${run.tool_calls} tool calls · ${(run.returned_bytes / 1024).toFixed(0)} KB read`);
     const ungrounded = run.state === 'completed' && !run.tool_calls ? 'No archive tools were used. Check the command’s MCP connection before relying on this answer.\n\n' : '';
     renderAnswer(ungrounded + (run.error ? `${run.answer || ''}\n${run.error}` : run.answer || (running ? 'Looking for evidence…' : '')));

@@ -133,7 +133,8 @@ test('Command+Enter and AI button use saved command; Markdown and previews stay 
   assert.equal(doc.getElementById('agentFramePreview').hidden, false);
   doc.getElementById('agentClose').click();
   assert.equal(doc.getElementById('agentFramePreview').hidden, true);
-  assert.match(doc.getElementById('searchInput').placeholder, /\(CMD\+Enter to Ask AI\)$/);
+  assert.equal(doc.getElementById('searchInput').placeholder, 'Search your history…');
+  assert.equal(doc.getElementById('agentOpen').textContent, 'Ask AI');
   assert.equal(doc.getElementById('agentOpen').parentElement.id, 'searchWrapper');
   const priorRun = doc.getElementById('agentTraceDownload').href;
   const withEvidence = `import json,os,urllib.request; connection=json.load(open(os.environ['OPENRELIFE_CONNECTION'])); request=urllib.request.Request(connection['url']+'/api/agent/tools',data=json.dumps({'tool':'find_frames','arguments':{'frame_ids':[${JSON.stringify(manifest.identifiers.meeting_first)}]}}).encode(),headers={'Content-Type':'application/json','Authorization':'Bearer '+os.environ['OPENRELIFE_RUN_TOKEN']}); json.load(urllib.request.urlopen(request)); print(json.dumps({'answer':${JSON.stringify(answer)}}))`;
@@ -190,6 +191,60 @@ test('Focused controls keep arrow keys while timeline navigation still works', a
   assert.equal(slider.value, '500');
   doc.body.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'ArrowRight', isComposing: true, bubbles: true, cancelable: true }));
   assert.equal(slider.value, '500');
+  dom.window.close(); connections.delete(dom);
+});
+
+test('Ask AI locks the question while running and restores editing on Stop, completion and failure', async () => {
+  const dom = await page(); const win = dom.window; const doc = win.document;
+  const question = doc.getElementById('agentQuestion'), field = doc.getElementById('agentQuestionField');
+  doc.getElementById('searchInput').focus();
+  assert.ok(doc.getElementById('paletteActions').classList.contains('show'));
+  assert.equal(doc.querySelector('#agentPaletteAsk kbd').textContent, '⌘Enter');
+  doc.getElementById('agentPaletteAsk').click();
+  await until(() => doc.getElementById('agentCommand').value.length > 0);
+  assert.equal(doc.getElementById('agentPanel').hidden, false);
+  assert.equal(doc.getElementById('paletteActions').classList.contains('show'), false);
+  doc.getElementById('agentPreset').value = 'custom';
+  doc.getElementById('agentPreset').dispatchEvent(new win.Event('change'));
+  async function command(program) {
+    const value = `${JSON.stringify(python)} -c ${JSON.stringify(program)}`;
+    doc.getElementById('agentCommand').value = value;
+    doc.getElementById('agentTimeout').value = '60';
+    doc.getElementById('agentSave').click();
+    await until(async () => (await api('/api/agent/settings')).command === value);
+  }
+  function assertEditing(enabled) {
+    assert.equal(question.disabled, !enabled);
+    assert.equal(field.classList.contains('is-running'), !enabled);
+    assert.equal(field.getAttribute('aria-busy'), String(!enabled));
+  }
+  await command('import time; time.sleep(30)');
+  question.value = 'Original question'; doc.getElementById('agentStart').click();
+  assertEditing(false);
+  await until(() => !doc.getElementById('agentCancel').disabled);
+  doc.getElementById('searchInput').value = 'Another search';
+  doc.getElementById('agentOpen').click();
+  assert.equal(question.value, 'Original question');
+  doc.getElementById('agentCancel').click();
+  assertEditing(true);
+  assert.equal(doc.getElementById('agentStart').disabled, true);
+  question.value = 'New draft after Stop';
+  await until(() => doc.getElementById('agentState').textContent.startsWith('cancelled'));
+  assertEditing(true);
+  assert.equal(doc.getElementById('agentStart').disabled, false);
+  assert.equal(question.value, 'New draft after Stop');
+  await command('import time; time.sleep(1); print("Finished")');
+  doc.getElementById('agentStart').click(); assertEditing(false);
+  await until(() => doc.getElementById('agentState').textContent.startsWith('completed'));
+  assertEditing(true);
+  await command('import sys; sys.exit(2)');
+  doc.getElementById('agentStart').click(); assertEditing(false);
+  await until(() => doc.getElementById('agentState').textContent.startsWith('failed'));
+  assertEditing(true);
+  question.value = 'x'.repeat(12001);
+  doc.getElementById('agentStart').click(); assertEditing(false);
+  await until(() => doc.getElementById('agentState').textContent.includes('12000'));
+  assertEditing(true);
   dom.window.close(); connections.delete(dom);
 });
 

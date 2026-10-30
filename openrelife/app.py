@@ -1416,6 +1416,9 @@ def timeline_v2():
     <!-- Command palette: global actions (shown under the search bar on focus / Cmd-K) -->
     <div class="palette-actions" id="paletteActions">
       <div class="palette-section-label">Actions</div>
+      <button type="button" class="palette-action" id="agentPaletteAsk" onmousedown="event.preventDefault()">
+        <i class="bi bi-stars" aria-hidden="true"></i><span>Ask AI</span><kbd class="agent-shortcut">⌘Enter</kbd>
+      </button>
       <div class="palette-action" onmousedown="event.preventDefault()" onclick="paletteAction('settings')">
         <i class="bi bi-gear"></i><span>Settings</span>
       </div>
@@ -1430,12 +1433,12 @@ def timeline_v2():
     <!-- Search bar -->
     <div class="search-container">
       <div class="search-wrapper" id="searchWrapper">
-        <input type="text" class="search-input" id="searchInput" placeholder="Search your history… (CMD+Enter to Ask AI)"
+        <input type="text" class="search-input" id="searchInput" placeholder="Search your history…"
                role="combobox" aria-expanded="false" aria-controls="resultsGrid"
                aria-autocomplete="list" autocomplete="off">
         <i class="bi bi-search search-icon" id="searchIcon"></i>
         <i class="bi bi-x-circle-fill clear-icon" id="searchClear" style="display: none;"></i>
-        <button type="button" id="agentOpen" class="search-agent-button" title="Ask AI (Command+Enter)" aria-label="Ask AI about your history (Command+Enter)">AI</button>
+        <button type="button" id="agentOpen" class="search-agent-button" title="Ask AI (Command+Enter)" aria-label="Ask AI about your history (Command+Enter)">Ask AI</button>
       </div>
     </div>
 
@@ -1685,7 +1688,8 @@ def timeline_v2():
       <button id="agentSave">Save command</button>
       <p class="agent-help">External MCP clients: use this stdio command while OpenReLife is running.</p><pre id="agentMcpCommand"></pre>
     </details>
-    <label>Question<textarea id="agentQuestion" rows="3" placeholder="Find a meeting I attended last week"></textarea></label>
+    <label for="agentQuestion">Question</label>
+    <div id="agentQuestionField" class="agent-question-field" aria-busy="false"><textarea id="agentQuestion" rows="4" placeholder="Find a meeting I attended last week"></textarea></div>
     <div class="agent-actions"><button id="agentStart">Ask</button><button id="agentCancel" hidden>Stop</button><span id="agentState" role="status"></span></div>
     <div id="agentAnswer" class="agent-answer" aria-live="polite"></div>
     <div id="agentEvidence"></div><div id="agentSelections"></div>
