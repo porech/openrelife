@@ -108,6 +108,39 @@ async function saveAgentSettings(win, doc) {
   win.closeSettings();
 }
 
+test('Command+Comma opens settings from inputs, is advertised in search actions and preserves edits', async () => {
+  const dom = await page({ loadPreferences:false }); const win = dom.window, doc = win.document;
+  assert.equal(doc.querySelector('#settingsPaletteAction kbd').textContent,'⌘,');
+  const shortcut = options => new win.KeyboardEvent('keydown',{key:',',code:'Comma',metaKey:true,bubbles:true,cancelable:true,...options});
+  doc.getElementById('searchInput').focus();
+  doc.getElementById('searchInput').dispatchEvent(shortcut({isComposing:true}));
+  assert.equal(doc.getElementById('settingsModalOverlay').hidden,true);
+  doc.getElementById('searchInput').dispatchEvent(shortcut({}));
+  await until(()=>!doc.getElementById('settingsFields').disabled);
+  assert.equal(doc.getElementById('settingsModalOverlay').hidden,false);
+  assert.equal(doc.getElementById('paletteActions').classList.contains('show'),false);
+  win.closeSettings();
+  await wait(160);
+  assert.equal(doc.activeElement.id,'searchInput');
+  assert.equal(doc.getElementById('paletteActions').classList.contains('show'),true);
+  doc.getElementById('settingsPaletteAction').click();
+  doc.querySelector('[data-settings-section="capture"]').click();
+  const input=doc.getElementById('intervalInput');input.value='17';
+  input.dispatchEvent(new win.Event('input',{bubbles:true}));input.focus();
+  const event=shortcut({});input.dispatchEvent(event);
+  assert.equal(event.defaultPrevented,true);
+  assert.equal(doc.querySelector('[data-settings-pane="capture"]').hidden,false);
+  assert.equal(input.value,'17');
+  win.closeSettings();
+  doc.getElementById('searchInput').dispatchEvent(shortcut({metaKey:false,ctrlKey:true}));
+  assert.equal(doc.getElementById('settingsModalOverlay').hidden,false);
+  assert.equal(input.value,'17');
+  doc.getElementById('settingsDiscard').click();win.closeSettings();
+  doc.getElementById('settingsPaletteAction').click();
+  assert.equal(doc.getElementById('settingsModalOverlay').hidden,false);
+  dom.window.close();connections.delete(dom);
+});
+
 test('Sidebar settings preserve drafts, layer above Ask AI, and save only changed preferences', async () => {
   const dom = await page(); const win = dom.window, doc = win.document;
   const initial = await api('/api/settings');

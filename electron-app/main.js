@@ -260,6 +260,13 @@ function showWindow() {
 }
 
 let isHiding = false;
+function openPreferences() {
+  // A settings shortcut in an already visible window must preserve its draft.
+  if (!mainWindow || !windowShouldBeVisible) showWindow();
+  else { mainWindow.show(); mainWindow.focus(); }
+  if (mainWindow) mainWindow.webContents.send('open-settings');
+}
+
 function hideWindow() {
   if (isHiding) return;
   isHiding = true;
@@ -372,12 +379,7 @@ function updateTrayMenu() {
     },
     { 
       label: 'Settings', 
-      click: () => {
-        showWindow();
-        if (mainWindow) {
-            mainWindow.webContents.send('open-settings');
-        }
-      }
+      click: openPreferences
     },
     { type: 'separator' },
     { 
@@ -856,6 +858,8 @@ function createMenu() {
       submenu: [
         { role: 'about' },
         { type: 'separator' },
+        { label: 'Settings…', accelerator: 'CommandOrControl+,', click: openPreferences },
+        { type: 'separator' },
         { role: 'services' },
         { type: 'separator' },
         { role: 'hide' },
@@ -873,6 +877,7 @@ function createMenu() {
     {
       label: 'File',
       submenu: [
+        ...(!isMac ? [{ label: 'Settings…', accelerator: 'CommandOrControl+,', click: openPreferences }, { type: 'separator' }] : []),
         { 
             label: 'Close Window',
             accelerator: 'CmdOrCtrl+W',

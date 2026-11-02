@@ -30,6 +30,7 @@ function launcher() {
   const fakeFs = { mkdirSync() {}, existsSync: () => true,
     readFileSync: () => JSON.stringify({ server_port: 48123 }), createWriteStream: () => ({ write() {} }) };
   const electron = { app, BrowserWindow: Window, screen: { getPrimaryDisplay: () => ({ workAreaSize: { width: 1200, height: 900 } }) },
+    Menu: { buildFromTemplate: template => template, setApplicationMenu: menu => { sent.applicationMenu = menu; } },
     systemPreferences: { getMediaAccessStatus: () => 'granted' }, desktopCapturer: { getSources: async () => [] },
     dialog: { showMessageBox: () => { sent.dialog = true; return Promise.resolve({ response: 0 }); } } };
   const context = vm.createContext({ require: name => {
@@ -76,6 +77,19 @@ test('Native quit marks intentional shutdown before backend exits', async () => 
   assert.equal(app.isQuitting, true);
   child.emit('close', 1);
   assert.equal(sent.dialog, undefined);
+});
+
+test('Settings has a native Command+Comma menu action and preserves an already visible workspace', () => {
+  const { context, sent } = launcher();
+  vm.runInContext('updateServerConfig();createWindow();createMenu()', context);
+  const settings = sent.applicationMenu.flatMap(item => item.submenu || []).find(item => item.label === 'Settings…');
+  assert.equal(settings.accelerator, 'CommandOrControl+,');
+  settings.click();
+  assert.equal(sent.ipc.at(-1).channel, 'open-settings');
+  const resets = sent.ipc.filter(item => item.channel === 'reset-ui').length;
+  settings.click();
+  assert.equal(sent.ipc.at(-1).channel, 'open-settings');
+  assert.equal(sent.ipc.filter(item => item.channel === 'reset-ui').length, resets);
 });
 
 test('Screenshot links accept only frame instants and survive startup', async () => {

@@ -1097,6 +1097,7 @@ def timeline_v2():
       display: flex; gap: 11px; align-items: center; padding: 10px;
       border-radius: 10px; cursor: pointer; font-size: 13.5px; color: #fff;
     }
+    button.palette-action { width:100%; border:0; background:transparent; text-align:left; font-family:inherit; }
     .palette-action i { width: 20px; text-align: center; font-size: 15px; color: rgba(255,255,255,0.8); }
     .palette-action:hover { background: rgba(255,255,255,0.09); }
     .palette-action.muted { color: rgba(255,255,255,0.62); }
@@ -1432,9 +1433,9 @@ def timeline_v2():
       <button type="button" class="palette-action" id="agentPaletteAsk" onmousedown="event.preventDefault()">
         <i class="bi bi-stars" aria-hidden="true"></i><span>Ask AI</span><kbd class="agent-shortcut">⌘Enter</kbd>
       </button>
-      <div class="palette-action" onmousedown="event.preventDefault()" onclick="paletteAction('settings')">
-        <i class="bi bi-gear"></i><span>Settings</span>
-      </div>
+      <button type="button" class="palette-action" id="settingsPaletteAction" aria-keyshortcuts="Meta+, Control+," onmousedown="event.preventDefault()" onclick="paletteAction('settings')">
+        <i class="bi bi-gear" aria-hidden="true"></i><span>Settings</span><kbd class="agent-shortcut">⌘,</kbd>
+      </button>
       <div class="palette-action muted" onmousedown="event.preventDefault()" onclick="paletteAction('hide')">
         <i class="bi bi-window-dash"></i><span>Hide window</span>
       </div>
@@ -2669,7 +2670,9 @@ def timeline_v2():
     // actions; typing hands off to the existing history search.
     searchInput.addEventListener('focus', () => { if (!searchInput.value.trim()) showPaletteActions(); });
     searchInput.addEventListener('input', () => { searchInput.value.trim() ? hidePaletteActions() : showPaletteActions(); });
-    searchInput.addEventListener('blur', () => { setTimeout(hidePaletteActions, 120); });
+    searchInput.addEventListener('blur', () => {
+      setTimeout(() => { if (document.activeElement !== searchInput) hidePaletteActions(); }, 120);
+    });
     // Cmd/Ctrl-K focuses the searchbar (opens the palette); again or Esc closes it.
     document.addEventListener('keydown', (e) => {
       if (document.getElementById('settingsModalOverlay').classList.contains('show')) return;
@@ -2803,7 +2806,7 @@ def timeline_v2():
     
 
     // Preferences logic lives in its own controller.
-    function openSettings(section = 'general', ai) { return window.openrelifeSettings.open(section, ai); }
+    function openSettings(section, ai) { return window.openrelifeSettings.open(section, ai); }
     function closeSettings() { return window.openrelifeSettings.close(); }
 
     // Calendar Logic

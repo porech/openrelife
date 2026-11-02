@@ -118,7 +118,7 @@
       .finally(() => { loading = null; refresh(); });
     refresh(); return loading;
   }
-  async function open(section = 'general', ai) {
+  async function open(section = activeSection, ai) {
     const alreadyOpen = !overlay.hidden;
     if (!alreadyOpen) previousFocus = document.activeElement;
     overlay.hidden = false; overlay.classList.add('show'); choose(section,ai);
@@ -207,6 +207,12 @@
     } catch (cause) { error(cause.message); }
   };
   document.addEventListener('keydown',event => {
+    if (event.isComposing) return;
+    if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key === ',') {
+      event.preventDefault(); event.stopImmediatePropagation();
+      if (!event.repeat) { hidePaletteActions(); open(); }
+      return;
+    }
     if (overlay.hidden || event.isComposing) return;
     if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); close(); return; }
     if (event.key === 'Tab') {
