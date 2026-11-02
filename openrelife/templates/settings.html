@@ -1,0 +1,71 @@
+<link rel="stylesheet" href="/assets/settings.css">
+<div class="settings-modal-overlay" id="settingsModalOverlay" hidden>
+  <section class="preferences" role="dialog" aria-modal="true" aria-labelledby="settingsTitle" aria-describedby="settingsDescription">
+    <header class="preferences-titlebar">
+      <span><i class="bi bi-layers" aria-hidden="true"></i> OpenReLife</span>
+      <button type="button" id="settingsClose" class="preferences-close" aria-label="Close settings">&times;</button>
+    </header>
+    <div class="preferences-workspace">
+      <nav class="preferences-nav" aria-label="Settings sections">
+        <h2>Settings</h2>
+        <span class="preferences-nav-group">Workspace</span>
+        <button type="button" data-settings-section="general" aria-current="page"><i class="bi bi-sliders2" aria-hidden="true"></i> General</button>
+        <button type="button" data-settings-section="capture"><i class="bi bi-bounding-box" aria-hidden="true"></i> Capture</button>
+        <button type="button" data-settings-section="storage"><i class="bi bi-hdd" aria-hidden="true"></i> Storage</button>
+        <span class="preferences-nav-group">Intelligence</span>
+        <button type="button" data-settings-section="ai"><i class="bi bi-stars" aria-hidden="true"></i> AI &amp; agents</button>
+        <span class="preferences-nav-group">System</span>
+        <button type="button" data-settings-section="privacy"><i class="bi bi-shield" aria-hidden="true"></i> Privacy</button>
+        <button type="button" data-settings-section="advanced"><i class="bi bi-toggles" aria-hidden="true"></i> Advanced</button>
+        <span class="preferences-version" id="settingsVersion">OpenReLife</span>
+      </nav>
+      <div class="preferences-main">
+        <header class="preferences-heading"><h2 id="settingsTitle">General</h2><p id="settingsDescription">Make OpenReLife feel at home on your Mac.</p></header>
+        <div id="settingsError" class="preferences-error" role="alert" hidden><span></span><button type="button" id="settingsRetry">Retry loading</button></div>
+        <form id="settingsForm" novalidate>
+          <fieldset id="settingsFields" disabled>
+            <section data-settings-pane="general" class="preferences-grid">
+              <div class="preferences-group"><h3>Keyboard shortcuts</h3><p>Move through your history without reaching for the mouse.</p>
+                <dl class="preferences-list"><div><dt>Show or hide OpenReLife</dt><dd><kbd>⌘ ⇧ Space</kbd></dd></div><div><dt>Ask AI</dt><dd><kbd>⌘ Enter</kbd></dd></div><div><dt>Focus search from the main view</dt><dd><kbd>Tab</kbd></dd></div><div><dt>Close the foreground panel</dt><dd><kbd>Esc</kbd></dd></div></dl>
+              </div>
+              <div class="preferences-group"><h3>Your screen history</h3><p>Choose how OpenReLife records and organizes your archive.</p><div class="preferences-shortcuts"><button type="button" class="preferences-link" data-settings-link="capture">Recording preferences <i class="bi bi-arrow-up-right" aria-hidden="true"></i></button><button type="button" class="preferences-link" data-settings-link="storage">Retention &amp; storage <i class="bi bi-arrow-up-right" aria-hidden="true"></i></button><button type="button" class="preferences-link" data-settings-link="ai">Configure AI &amp; agents <i class="bi bi-arrow-up-right" aria-hidden="true"></i></button></div></div>
+            </section>
+            <section data-settings-pane="capture" hidden>
+              <div class="preferences-grid">
+                <div class="preferences-group"><h3>Screenshots</h3><p>Balance capture detail with disk space and processing.</p><div class="preferences-fields">
+                  <label>Capture interval (seconds)<input id="intervalInput" type="number" min="1" max="86400" step="1" data-app-setting="interval" required></label>
+                  <label>Image quality<select id="qualitySelect" data-app-setting="quality"><option value="low">Low · 80% scale and quality</option><option value="medium">Medium · 95% scale and quality</option><option value="high">High · original, lossless</option></select></label>
+                </div><p id="intervalWarning" class="preferences-warning" hidden>Intervals below 3 seconds substantially increase CPU and disk usage.</p></div>
+                <div class="preferences-group"><h3>Local text recognition</h3><p>Screenshots keep recording while OCR processes text separately.</p>
+                  <label class="preferences-switch-row" id="ocrEngineSection" hidden><span>Use Apple Vision<small>Native macOS text recognition.</small></span><input id="useAppleVisionCheckbox" type="checkbox" data-app-setting="use_apple_vision"></label>
+                  <div class="preferences-fields"><label>Processing mode<select id="ocrComputeModeSelect" data-app-setting="ocr_compute_mode"><option value="aggressive">Aggressive</option><option value="smart">Smart</option><option value="on_charge_only">On charge only</option><option value="eco">Eco</option><option value="disabled">Disabled</option></select></label><label>Batch cooldown (seconds)<input id="ocrCooldownInput" type="number" min="10" max="86400" step="1" data-app-setting="ocr_cooldown" required></label></div>
+                  <p id="settingsComputeHelp" class="preferences-help"></p>
+                  <div id="ocrSafetyWarning" class="preferences-warning" role="status" hidden><span id="ocrSafetyReason"></span><button id="ocrSafetyResume" type="button">Resume text recognition</button></div>
+                  <button type="button" class="preferences-link" data-settings-link="ai" data-ai-link="ocr">AI OCR provider <i class="bi bi-arrow-up-right" aria-hidden="true"></i></button>
+                </div>
+              </div>
+            </section>
+            <section data-settings-pane="storage" hidden>
+              <div class="preferences-grid"><div class="preferences-group"><h3>Retention</h3><p>Automatically remove screenshots older than this period.</p><div class="preferences-fields"><label class="preferences-full">Keep screenshots for<select id="retentionSelect" data-app-setting="retention_days"><option value="-1">Keep forever</option><option value="7">7 days</option><option value="30">30 days</option><option value="90">90 days</option><option value="365">1 year</option></select></label></div><p class="preferences-warning">Saving a shorter retention period permanently deletes expired screenshots and their search data.</p><p class="preferences-help">Cleanup runs on startup, when retention changes, and daily.</p></div>
+                <div class="preferences-group"><h3>Archive location</h3><p>Screenshots, OCR and search data are stored on this Mac.</p><code id="settingsStoragePath" class="preferences-code"></code><p id="settingsCleanupStatus" class="preferences-help" role="status"></p></div></div>
+            </section>
+            <section data-settings-pane="ai" hidden>
+              <div class="preferences-tabs" aria-label="AI settings"><button type="button" data-settings-ai="agent" aria-pressed="true">Ask AI</button><button type="button" data-settings-ai="ocr" aria-pressed="false">AI OCR</button><button type="button" data-settings-ai="mcp" aria-pressed="false">MCP</button></div>
+              <div data-settings-ai-pane="agent">
+                <div class="preferences-grid preferences-agent-grid"><div class="preferences-group"><h3>Agent command</h3><p>Run an installed CLI. Presets remain fully editable.</p><div class="preferences-fields"><label class="preferences-full">Preset<select id="agentPreset"><option value="codex">Codex</option><option value="claude">Claude</option><option value="custom">Custom command</option></select></label><label class="preferences-full">Command<textarea id="agentCommand" rows="5" spellcheck="false" required></textarea></label></div><p class="preferences-help">The question is passed on stdin. No shell expansion is performed.</p></div>
+                  <div class="preferences-group"><h3>Execution</h3><p>Set the maximum duration of a request.</p><div class="preferences-fields"><label class="preferences-full">Timeout (seconds)<input id="agentTimeout" type="number" min="10" max="1800" step="1" required></label></div><p id="settingsAgentAvailability" class="preferences-help"></p><div class="preferences-subgroup"><h3>Archive connection</h3><p>Search, OCR, screenshots and time filters via MCP.</p><button type="button" class="preferences-link" data-settings-link="ai" data-ai-link="mcp">Configure MCP <i class="bi bi-arrow-up-right" aria-hidden="true"></i></button></div></div>
+                </div><p class="preferences-note"><i class="bi bi-cloud" aria-hidden="true"></i> The command runs on your Mac. Your CLI may send selected content to its model provider.</p>
+              </div>
+              <div data-settings-ai-pane="ocr" hidden><div class="preferences-grid"><div class="preferences-group"><h3>AI text recognition</h3><p>Used only when you request AI OCR for a screenshot.</p><div class="preferences-fields"><label class="preferences-full">Provider<select id="aiProvider"><option value="gemini">Google Gemini</option><option value="openai">OpenAI</option><option value="claude">Anthropic Claude</option></select></label><label class="preferences-full">API key<input type="password" id="aiApiKey" autocomplete="new-password" spellcheck="false" placeholder="Enter a provider key"></label></div><p id="settingsKeyStatus" class="preferences-help"></p><p class="preferences-help">Leave blank to keep the saved key for the same provider.</p></div><div class="preferences-group"><h3>Standard OCR</h3><p>Local text recognition is configured separately in Capture. It does not use this API key.</p><button type="button" class="preferences-link" data-settings-link="capture">Local OCR settings <i class="bi bi-arrow-up-right" aria-hidden="true"></i></button><p class="preferences-note">AI OCR sends the selected screenshot to the chosen provider. The provider key is stored locally.</p></div></div></div>
+              <div data-settings-ai-pane="mcp" hidden><div class="preferences-grid"><div class="preferences-group"><h3>Local MCP server</h3><p>Connect a compatible agent or chatbot to your archive.</p><dl class="preferences-list"><div><dt>Connection</dt><dd>Local · stdio</dd></div><div><dt>Archive access</dt><dd>Search &amp; inspect</dd></div><div><dt>Deletion</dt><dd>Proposals only</dd></div></dl><p class="preferences-help">Agents select screenshots or intervals. OpenReLife shows the selection and performs deletion only after your confirmation.</p></div><div class="preferences-group"><h3>Connection configuration</h3><p>Use this command while OpenReLife is running.</p><pre id="agentMcpCommand" class="preferences-code"></pre><button type="button" id="settingsCopyMcp" class="preferences-secondary">Copy command</button><details class="preferences-details"><summary>Custom command integration</summary><p>Use <code>{mcp_config}</code> or <code>OPENRELIFE_MCP_CONFIG</code> to connect a custom CLI. Codex and Claude presets connect MCP automatically.</p></details></div></div></div>
+            </section>
+            <section data-settings-pane="privacy" hidden><div class="preferences-grid"><div class="preferences-group"><h3>Capture privacy</h3><label class="preferences-switch-row"><span>Skip private browsing<small>Do not capture supported incognito or private browser windows.</small></span><input id="skipIncognitoCheckbox" type="checkbox" data-app-setting="skip_incognito"></label><div class="preferences-subgroup"><h3>AI &amp; your screenshots</h3><p>Your configured CLI and AI OCR provider may send selected content to external services.</p><button type="button" class="preferences-link" data-settings-link="ai">Review AI configuration <i class="bi bi-arrow-up-right" aria-hidden="true"></i></button></div></div><div class="preferences-group"><h3>macOS permissions</h3><p>Manage OpenReLife access in System Settings.</p><div class="preferences-shortcuts"><button type="button" class="preferences-secondary" data-settings-permission="screen">Screen Recording <i class="bi bi-arrow-up-right" aria-hidden="true"></i></button><button type="button" class="preferences-secondary" data-settings-permission="accessibility">Accessibility <i class="bi bi-arrow-up-right" aria-hidden="true"></i></button></div></div></div></section>
+            <section data-settings-pane="advanced" hidden><div class="preferences-grid"><div class="preferences-group"><h3>Local connection</h3><p>Changing the port requires restarting OpenReLife.</p><div class="preferences-fields"><label class="preferences-full">Server port<input id="portInput" type="number" min="1024" max="65535" step="1" data-app-setting="port" required></label></div></div><div class="preferences-group"><h3>Agent diagnostics</h3><p>Each run records commands, public tool calls, results and errors. Open the execution trace in Ask AI to inspect a run.</p><button type="button" class="preferences-link" data-settings-link="ai">Agent configuration <i class="bi bi-arrow-up-right" aria-hidden="true"></i></button></div></div></section>
+          </fieldset>
+        </form>
+        <footer class="preferences-footer"><span id="settingsStatus" role="status" aria-live="polite">Loading settings…</span><div><button type="button" id="settingsDiscard" class="preferences-secondary" disabled>Discard changes</button><button type="button" id="settingsSave" class="preferences-primary" disabled>Save changes</button></div></footer>
+      </div>
+    </div>
+  </section>
+</div>
+<script src="/assets/settings.js" defer></script>

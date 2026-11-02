@@ -59,13 +59,17 @@ after(async () => {
   fs.writeFileSync(output, JSON.stringify({ artifact_directory: root, native_visual_test: false }, null, 2));
 });
 
-async function page() {
+async function page({ loadPreferences = true } = {}) {
   const response = await fetch(base + '/', { headers: { 'X-OpenReLife-Control': control } });
   assert.equal(response.status, 200);
   const html = await response.text();
   const dom = new JSDOM(html, { url: base, runScripts: 'outside-only', pretendToBeVisual: true });
   connections.add(dom);
   const win = dom.window;
+  for (const link of win.document.querySelectorAll('link[href^="/assets/"]')) {
+    const css = await fetch(base + link.getAttribute('href'), { headers: { 'X-OpenReLife-Control': control } }).then(result => result.text());
+    const style = win.document.createElement('style'); style.textContent = css; win.document.head.append(style);
+  }
   win.AbortController = globalThis.AbortController;
   win.AbortSignal = globalThis.AbortSignal;
   win.fetch = (url, options = {}) => fetch(new URL(url, base), {
@@ -87,8 +91,137 @@ async function page() {
   for (const element of win.document.querySelectorAll('[onclick]')) {
     element.onclick = new win.Function('event', element.getAttribute('onclick'));
   }
+  if (loadPreferences) {
+    await win.openSettings('ai', 'agent');
+    assert.equal(win.document.getElementById('settingsError').hidden, true);
+    win.closeSettings();
+  }
   return dom;
 }
+
+async function saveAgentSettings(win, doc) {
+  await win.openSettings('ai', 'agent');
+  doc.getElementById('agentCommand').dispatchEvent(new win.Event('input', { bubbles: true }));
+  doc.getElementById('settingsSave').click();
+  await until(() => doc.getElementById('settingsStatus').textContent === 'All changes saved');
+  assert.equal(doc.getElementById('settingsError').hidden, true);
+  win.closeSettings();
+}
+
+test('Sidebar settings preserve drafts, layer above Ask AI, and save only changed preferences', async () => {
+  const dom = await page(); const win = dom.window, doc = win.document;
+  const initial = await api('/api/settings');
+  const posts = [], originalFetch = win.fetch;
+  win.fetch = (url, options = {}) => {
+    if (options.method === 'POST' && ['/api/settings', '/api/agent/settings', '/api/config'].includes(String(url))) {
+      posts.push({ url: String(url), body: JSON.parse(options.body) });
+    }
+    return originalFetch(url, options);
+  };
+  doc.getElementById('agentOpen').click();
+  await until(() => !doc.getElementById('agentPanel').hidden);
+  doc.getElementById('agentQuestion').value = 'Keep my question';
+  doc.getElementById('agentConfigure').click();
+  await until(() => !doc.getElementById('settingsFields').disabled);
+  assert.equal(doc.querySelector('[data-settings-pane="ai"]').hidden, false);
+  const settingsZ = Number(win.getComputedStyle(doc.getElementById('settingsModalOverlay')).zIndex);
+  assert.ok(settingsZ > Number(win.getComputedStyle(doc.getElementById('agentPanel')).zIndex));
+  doc.querySelector('[data-settings-section="capture"]').click();
+  const interval = doc.getElementById('intervalInput'); interval.value = String(initial.interval + 1);
+  interval.dispatchEvent(new win.Event('input', { bubbles: true }));
+  doc.querySelector('[data-settings-section="storage"]').click();
+  doc.querySelector('[data-settings-section="capture"]').click();
+  assert.equal(interval.value, String(initial.interval + 1));
+  let hidden = 0; win.electronAPI = { hideWindow: () => { hidden++; } };
+  interval.dispatchEvent(new win.KeyboardEvent('keydown', { key:'Escape', bubbles:true, cancelable:true }));
+  assert.equal(doc.getElementById('settingsModalOverlay').hidden, true);
+  assert.equal(doc.getElementById('agentPanel').hidden, false);
+  assert.equal(doc.getElementById('agentQuestion').value, 'Keep my question');
+  assert.equal(hidden, 0);
+  await win.openSettings('capture');
+  assert.equal(interval.value, String(initial.interval + 1));
+  doc.getElementById('settingsSave').click();
+  await until(() => doc.getElementById('settingsStatus').textContent === 'All changes saved');
+  assert.deepEqual(posts, [{url:'/api/settings',body:{interval:String(initial.interval + 1)}}]);
+  assert.equal((await api('/api/settings')).interval, initial.interval + 1);
+  assert.equal((await api('/api/settings')).retention_days, initial.retention_days);
+  interval.value = '20'; interval.dispatchEvent(new win.Event('input', { bubbles:true }));
+  doc.getElementById('settingsDiscard').click();
+  assert.equal(interval.value, String(initial.interval + 1));
+  assert.equal(doc.getElementById('settingsSave').disabled, true);
+  const classic = await fetch(base + '/classic', { headers: { 'X-OpenReLife-Control': control } });
+  assert.equal(classic.status, 200);
+  const classicHtml = await classic.text();
+  assert.match(classicHtml, /settings=ai-ocr/);
+  assert.doesNotMatch(classicHtml, /id="aiApiKey"/);
+  dom.window.close(); connections.delete(dom);
+});
+
+test('Settings keep a saved provider key and validate new providers before any write', async () => {
+  const dom = await page(); const win = dom.window, doc = win.document;
+  await win.openSettings('ai','ocr');
+  doc.getElementById('aiProvider').value = 'gemini';
+  doc.getElementById('aiApiKey').value = 'synthetic-key-never-sent-to-a-provider';
+  doc.getElementById('aiApiKey').dispatchEvent(new win.Event('input',{bubbles:true}));
+  doc.getElementById('settingsSave').click();
+  await until(() => doc.getElementById('settingsStatus').textContent === 'All changes saved');
+  assert.equal(doc.getElementById('aiApiKey').value, '');
+  const original = await api('/api/config?full=true');
+  const posts = [], originalFetch=win.fetch;
+  win.fetch=(url,options={})=>{if(options.method==='POST')posts.push(String(url));return originalFetch(url,options);};
+  doc.getElementById('aiProvider').value='claude';
+  doc.getElementById('aiProvider').dispatchEvent(new win.Event('change',{bubbles:true}));
+  doc.getElementById('qualitySelect').value='low';
+  doc.getElementById('settingsSave').click();
+  assert.match(doc.getElementById('settingsError').textContent,/Enter a key/);
+  assert.deepEqual(posts,[]);
+  assert.deepEqual(await api('/api/config?full=true'),original);
+  assert.equal(doc.activeElement.id,'aiApiKey');
+  doc.getElementById('settingsDiscard').click();
+  assert.equal(doc.getElementById('aiProvider').value,'gemini');
+  dom.window.close();connections.delete(dom);
+});
+
+test('Unavailable settings cannot save defaults, and retry loads the real values', async () => {
+  const dom=await page({loadPreferences:false});const win=dom.window,doc=win.document;
+  const originalFetch=win.fetch;
+  win.fetch=(url,options={})=>String(url)==='/api/settings'?Promise.reject(new Error('Synthetic offline failure')):originalFetch(url,options);
+  await win.openSettings('storage');
+  assert.equal(doc.getElementById('settingsFields').disabled,true);
+  assert.equal(doc.getElementById('settingsSave').disabled,true);
+  assert.match(doc.getElementById('settingsError').textContent,/Synthetic offline failure/);
+  win.fetch=originalFetch;doc.getElementById('settingsRetry').click();
+  await until(()=>!doc.getElementById('settingsFields').disabled);
+  assert.equal(doc.getElementById('retentionSelect').value,String((await api('/api/settings')).retention_days));
+  assert.equal(doc.getElementById('settingsError').hidden,true);
+  dom.window.close();connections.delete(dom);
+});
+
+test('A partial settings failure retains unsaved edits and does not repeat successful writes', async () => {
+  const dom=await page();const win=dom.window,doc=win.document;
+  await win.openSettings('ai','agent');
+  doc.getElementById('agentPreset').value='custom';
+  doc.getElementById('agentPreset').dispatchEvent(new win.Event('change',{bubbles:true}));
+  doc.getElementById('agentCommand').value='/bin/cat';
+  doc.getElementById('aiApiKey').value='synthetic-replacement-key';
+  doc.getElementById('agentCommand').dispatchEvent(new win.Event('input',{bubbles:true}));
+  const originalFetch=win.fetch,posts=[];let fail=true;
+  win.fetch=(url,options={})=>{
+    if(options.method==='POST')posts.push(String(url));
+    if(String(url)==='/api/config'&&options.method==='POST'&&fail)return Promise.resolve({ok:false,status:503,json:async()=>({error:'Synthetic config write failure'})});
+    return originalFetch(url,options);
+  };
+  doc.getElementById('settingsSave').click();
+  await until(()=>doc.getElementById('settingsStatus').textContent==='Review the remaining changes');
+  assert.match(doc.getElementById('settingsError').textContent,/Some changes were saved/);
+  assert.equal(doc.getElementById('aiApiKey').value,'synthetic-replacement-key');
+  assert.equal((await api('/api/agent/settings')).command,'/bin/cat');
+  fail=false;doc.getElementById('settingsSave').click();
+  await until(()=>doc.getElementById('settingsStatus').textContent==='All changes saved');
+  assert.deepEqual(posts,['/api/agent/settings','/api/config','/api/config']);
+  assert.equal(doc.getElementById('aiApiKey').value,'');
+  dom.window.close();connections.delete(dom);
+});
 
 test('Command+Enter and AI button use saved command; Markdown and previews stay safe', async () => {
   const dom = await page(); const win = dom.window; const doc = win.document;
@@ -99,8 +232,7 @@ test('Command+Enter and AI button use saved command; Markdown and previews stay 
   doc.getElementById('agentPreset').value = 'custom';
   doc.getElementById('agentPreset').dispatchEvent(new win.Event('change', { bubbles: true }));
   doc.getElementById('agentCommand').value = `${JSON.stringify(python)} -c ${JSON.stringify(program)}`;
-  doc.getElementById('agentSave').click();
-  await until(() => doc.getElementById('agentState').textContent.includes('saved'));
+  await saveAgentSettings(win, doc);
   doc.getElementById('searchInput').value = 'Synthetic DOM command test';
   const event = new win.KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true, cancelable: true });
   doc.getElementById('searchInput').dispatchEvent(event);
@@ -145,7 +277,7 @@ test('Command+Enter and AI button use saved command; Markdown and previews stay 
   const priorRun = doc.getElementById('agentTraceDownload').href;
   const withEvidence = `import json,os,urllib.request; connection=json.load(open(os.environ['OPENRELIFE_CONNECTION'])); request=urllib.request.Request(connection['url']+'/api/agent/tools',data=json.dumps({'tool':'find_frames','arguments':{'frame_ids':[${JSON.stringify(manifest.identifiers.meeting_first)}]}}).encode(),headers={'Content-Type':'application/json','Authorization':'Bearer '+os.environ['OPENRELIFE_RUN_TOKEN']}); json.load(urllib.request.urlopen(request)); print(json.dumps({'answer':${JSON.stringify(answer)}}))`;
   doc.getElementById('agentCommand').value = `${JSON.stringify(python)} -c ${JSON.stringify(withEvidence)}`;
-  doc.getElementById('agentSave').click();
+  await saveAgentSettings(win, doc);
   await until(async () => (await api('/api/agent/settings')).command.includes('urllib.request'));
   doc.getElementById('searchInput').value = 'Synthetic AI button query';
   doc.getElementById('agentOpen').click();
@@ -216,7 +348,7 @@ test('Ask AI locks the question while running and restores editing on Stop, comp
     const value = `${JSON.stringify(python)} -c ${JSON.stringify(program)}`;
     doc.getElementById('agentCommand').value = value;
     doc.getElementById('agentTimeout').value = '60';
-    doc.getElementById('agentSave').click();
+    await saveAgentSettings(win, doc);
     await until(async () => (await api('/api/agent/settings')).command === value);
   }
   function assertEditing(enabled) {

@@ -5,7 +5,7 @@ import io
 
 import numpy as np
 from flask import Flask, render_template_string, request, send_from_directory, send_file, jsonify
-from jinja2 import BaseLoader
+from jinja2 import BaseLoader, ChoiceLoader, TemplateNotFound
 from PIL import Image
 
 from openrelife.config import appdata_folder, screenshots_path, args
@@ -35,6 +35,7 @@ from openrelife.screenshot import (
 )
 from openrelife.ocr_safety import OcrSafetyError
 from openrelife.retention import RetentionManager, validate_days
+from openrelife.preferences import app_version, validate_patch
 from openrelife.agent import register_agent_routes, control_token_from_parent
 from openrelife.apple_vision_ocr import is_apple_vision_available
 from openrelife.utils import human_readable_time, timestamp_to_human_readable, has_screen_permission, has_accessibility_permission
@@ -443,10 +444,10 @@ class StringLoader(BaseLoader):
     def get_source(self, environment, template):
         if template == "base_template":
             return base_template, None, lambda: True
-        return None, None, None
+        raise TemplateNotFound(template)
 
 
-app.jinja_env.loader = StringLoader()
+app.jinja_env.loader = ChoiceLoader([StringLoader(), app.jinja_loader])
 
 
 @app.route("/")
@@ -1513,181 +1514,12 @@ def timeline_v2():
     </div>
   </div>
   
-  <!-- Settings Modal -->
-  <div class="settings-modal-overlay" id="settingsModalOverlay" onclick="if(event.target===this) closeSettings()">
-    <div class="settings-modal">
-      <div class="settings-modal-header">
-        <h2>Settings</h2>
-        <button class="close-btn" onclick="closeSettings()">&times;</button>
-      </div>
-      <div class="settings-modal-body">
-        <div class="form-group">
-          <label>Screenshot Retention</label>
-          <select id="retentionSelect" class="form-control" style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: #fff; height: auto; padding: 0.375rem 0.75rem;">
-            <option value="-1">Keep Forever (Default)</option>
-            <option value="7">7 Days</option>
-            <option value="30">30 Days</option>
-            <option value="90">90 Days</option>
-            <option value="365">1 Year</option>
-          </select>
-          <small class="form-text text-muted" style="margin-top: 8px;">
-            Expired screenshots and search data are removed on startup, when this setting changes, and daily.
-            <br><span style="color: #ffc107;"><i class="bi bi-exclamation-triangle"></i> Changing this will permanently delete old data.</span>
-          </small>
-        </div>
-        
-        <div class="form-group">
-          <label>
-            Screenshot Interval (seconds)
-            <div class="tooltip-container">
-              <i class="bi bi-question-circle" style="cursor: help; margin-left: 4px; color: rgba(255,255,255,0.4);"></i>
-              <span class="tooltip-text">Time between screen captures. OCR runs separately in the background and does not affect capture speed.</span>
-            </div>
-          </label>
-          <input type="text" inputmode="numeric" id="intervalInput" class="form-control" oninput="this.value = this.value.replace(/[^0-9]/g, ''); checkIntervalWarning(this.value)" style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: #fff; height: auto; padding: 0.375rem 0.75rem;">
-          <div id="intervalWarning" style="margin-top: 12px; color: #ffc107; display: none; background: rgba(255, 193, 7, 0.1); padding: 12px; border-radius: 8px; border-left: 4px solid #ffc107; font-size: 13px;">
-            <i class="bi bi-exclamation-triangle-fill" style="margin-right: 8px;"></i>
-            <strong>Warning:</strong> setting a value below 3 seconds will cause an <strong>unproportional</strong> increase in CPU and disk usage. Proceed only if strictly necessary.
-          </div>
-        </div>
+  {% include 'settings.html' %}
 
-        <div class="form-group">
-          <label>Screenshot Quality</label>
-          <select id="qualitySelect" class="form-control" style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: #fff; height: auto; padding: 0.375rem 0.75rem;">
-            <option value="low">Low (80% scale, 80% quality)</option>
-            <option value="medium">Medium (95% scale, 95% quality)</option>
-            <option value="high">High (Original scale, Lossless)</option>
-          </select>
-          <small class="form-text text-muted" style="margin-top: 8px;">
-            Higher quality will result in larger file sizes.
-          </small>
-        </div>
-
-        <div class="form-group">
-          <label>
-            OCR Processing Interval (seconds)
-            <div class="tooltip-container">
-              <i class="bi bi-question-circle" style="cursor: help; margin-left: 4px; color: rgba(255,255,255,0.4);"></i>
-              <span class="tooltip-text">How long to wait between OCR batches. Higher values reduce CPU usage but delay text extraction. Screenshots are always captured regardless of this setting.</span>
-            </div>
-          </label>
-          <input type="text" inputmode="numeric" id="ocrCooldownInput" class="form-control" oninput="this.value = this.value.replace(/[^0-9]/g, '')" style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: #fff; height: auto; padding: 0.375rem 0.75rem;">
-          <small class="form-text text-muted" style="margin-top: 8px;">
-            Default: 90s. Lower = faster text search, higher = less CPU usage.
-          </small>
-        </div>
-
-        <div id="ocrEngineSection" class="form-group" style="display: none;">
-          <label style="display:block; font-weight:600; margin-bottom:6px;">OCR Engine</label>
-          <label style="display:flex; align-items:center; gap:8px;">
-            <input type="checkbox" id="useAppleVisionCheckbox">
-            <span>Use Apple Vision (native text recognition)</span>
-          </label>
-          <p style="margin-top:6px; color:#666; font-size:12px;">
-            Native macOS text recognition. Falls back to doctr automatically if a frame fails.
-            Available only on Mac with Apple Silicon.
-          </p>
-        </div>
-
-        <div class="form-group">
-          <label>
-            OCR Compute Mode
-            <div class="tooltip-container">
-              <i class="bi bi-question-circle" style="cursor: help; margin-left: 4px; color: rgba(255,255,255,0.4);"></i>
-              <span class="tooltip-text">Controls how aggressively OCR processes screenshots. Affects CPU usage and how quickly text becomes searchable.</span>
-            </div>
-          </label>
-          <select id="ocrComputeModeSelect" class="form-control" style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: #fff; height: auto; padding: 0.375rem 0.75rem;">
-            <option value="aggressive">Aggressive — large batches, short cooldown, always runs</option>
-            <option value="smart" selected>Smart — adapts to battery/charging/idle state</option>
-            <option value="on_charge_only">On Charge Only — no OCR on battery, recovers when plugged in</option>
-            <option value="eco">Eco — power-saving: single thread, tiny batches, only when fully charged or idle</option>
-            <option value="disabled">Disabled — never run OCR (screenshots still captured, text not searchable)</option>
-          </select>
-          <div id="ocrSafetyWarning" role="status" style="display:none; margin-top:8px; color:#ffc107;">
-            <span id="ocrSafetyReason"></span>
-            <button id="ocrSafetyResume" type="button" class="btn btn-sm btn-outline-warning" onclick="resumeOcrSafety()">Resume text recognition</button>
-          </div>
-          <small class="form-text text-muted" style="margin-top: 8px;">
-            <strong>Aggressive:</strong> fastest text availability, highest CPU usage.<br>
-            <strong>Smart:</strong> small batches on battery, medium on charge, full recovery when idle+charging.<br>
-            <strong>On Charge Only:</strong> zero CPU impact on battery, processes backlog when plugged in.<br>
-            <strong>Eco:</strong> minimum power draw — skips on battery, runs slowly when on AC and idle or fully charged.<br>
-            <strong>Disabled:</strong> OCR is paused entirely; screenshots are saved but their text is not extracted until you switch to another mode.
-          </small>
-        </div>
-
-        <div class="form-group">
-          <label style="display: flex; align-items: center; cursor: pointer;">
-            <input type="checkbox" id="skipIncognitoCheckbox" checked style="width: 18px; height: 18px; margin-right: 10px; accent-color: #0d6efd;">
-            Skip recording in incognito/private mode
-          </label>
-          <small class="form-text text-muted" style="margin-top: 8px;">
-            When enabled, screenshots will not be captured while a browser is in incognito or private browsing mode.
-          </small>
-        </div>
-
-        <div class="form-group">
-          <label>
-            Server Port
-             <div class="tooltip-container">
-              <i class="bi bi-question-circle" style="cursor: help; margin-left: 4px; color: rgba(255,255,255,0.4);"></i>
-              <span class="tooltip-text">Requires restart to take effect. Default: 8082</span>
-            </div>
-          </label>
-          <input type="text" inputmode="numeric" id="portInput" class="form-control" oninput="this.value = this.value.replace(/[^0-9]/g, '')" style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: #fff; height: auto; padding: 0.375rem 0.75rem;">
-        </div>
-      </div>
-      <div class="settings-modal-footer">
-        <button class="btn btn-secondary" onclick="closeSettings()">Close</button>
-        <button class="btn btn-primary" onclick="saveSettings()">Save Changes</button>
-      </div>
-    </div>
-  </div>
-  
-  <!-- AI Config Modal -->
-  <div class="config-modal-overlay" id="configModalOverlay" onclick="if(event.target===this) closeAIConfig()">
-    <div class="config-modal">
-      <div class="config-modal-header">
-        <h2>AI Provider Settings</h2>
-        <button class="close-btn" onclick="closeAIConfig()">&times;</button>
-      </div>
-      <div class="config-modal-body">
-        <div class="form-group">
-          <label>AI Provider</label>
-          <select id="aiProvider">
-            <option value="gemini">Google Gemini</option>
-            <option value="openai">OpenAI (GPT-4o)</option>
-            <option value="claude">Anthropic Claude</option>
-          </select>
-          <small>Choose your preferred AI provider for enhanced OCR</small>
-        </div>
-        <div class="form-group">
-          <label>API Key</label>
-          <input type="password" id="aiApiKey" placeholder="Enter your API key">
-          <small>Your API key is stored locally and never sent to our servers</small>
-        </div>
-      </div>
-      <div class="config-modal-footer">
-        <button class="btn btn-secondary" onclick="closeAIConfig()">Cancel</button>
-        <button class="btn btn-primary" onclick="saveAIConfig()">
-          <i class="bi bi-check-lg"></i> Save Settings
-        </button>
-      </div>
-    </div>
-  </div>
-  
   <link rel="stylesheet" href="/assets/agents.css">
   <aside id="agentPanel" class="agent-panel" hidden>
     <div class="agent-header"><strong>Ask your history</strong><button type="button" id="agentClose" class="agent-icon-button" aria-label="Close agent panel" title="Close agent panel"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M4 4l8 8M12 4l-8 8"/></svg></button></div>
-    <details id="agentSettings"><summary>Agent command and MCP connection</summary>
-      <label>Preset<select id="agentPreset"><option value="codex">Codex</option><option value="claude">Claude</option><option value="custom">Custom command</option></select></label>
-      <label>Command<textarea id="agentCommand" rows="4" spellcheck="false"></textarea></label>
-      <label>Timeout (seconds)<input id="agentTimeout" type="number" min="10" max="1800" value="300"></label>
-      <p class="agent-help">Commands receive the question on stdin. Presets connect the archive MCP automatically. A custom command can use {mcp_config} and OPENRELIFE_MCP_CONFIG. No direct archive writes.</p>
-      <button id="agentSave">Save command</button>
-      <p class="agent-help">External MCP clients: use this stdio command while OpenReLife is running.</p><pre id="agentMcpCommand"></pre>
-    </details>
+    <button type="button" id="agentConfigure" class="agent-configure">Configure AI &amp; agents <i class="bi bi-arrow-up-right" aria-hidden="true"></i></button>
     <label for="agentQuestion">Question</label>
     <div id="agentQuestionField" class="agent-question-field" aria-busy="false"><textarea id="agentQuestion" rows="4" placeholder="Find a meeting I attended last week"></textarea></div>
     <div class="agent-actions"><button id="agentStart">Ask</button><button id="agentCancel" hidden>Stop</button><span id="agentState" role="status"></span></div>
@@ -2152,13 +1984,6 @@ def timeline_v2():
            handled = true;
          }
 
-         // Close AI config if open
-         const aiConfig = document.getElementById('configModalOverlay');
-         if (aiConfig && aiConfig.classList.contains('show')) {
-           closeAIConfig();
-           handled = true;
-         }
-         
          // Close text popup if open
          const textPopup = document.getElementById('textPopup');
          if (textPopup && textPopup.classList.contains('show')) {
@@ -2245,6 +2070,7 @@ def timeline_v2():
     
     // Arrow keys
     document.addEventListener('keydown', e => {
+      if (document.getElementById('settingsModalOverlay').classList.contains('show')) return;
       if (e.defaultPrevented || e.isComposing || e.target?.closest?.('input, textarea, select, [contenteditable], [role="textbox"]')) return;
       if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
         e.preventDefault();
@@ -2846,6 +2672,7 @@ def timeline_v2():
     searchInput.addEventListener('blur', () => { setTimeout(hidePaletteActions, 120); });
     // Cmd/Ctrl-K focuses the searchbar (opens the palette); again or Esc closes it.
     document.addEventListener('keydown', (e) => {
+      if (document.getElementById('settingsModalOverlay').classList.contains('show')) return;
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         if (document.activeElement === searchInput || isPaletteOpen()) {
@@ -2862,9 +2689,6 @@ def timeline_v2():
     });
 
     let currentOCRMode = 'basic';
-    let aiConfig = null;
-    
-    fetch('/api/config').then(r => r.json()).then(c => aiConfig = c);
     
     function toggleOCRMode() {
       currentOCRMode = currentOCRMode === 'ai' ? 'basic' : 'ai';
@@ -2951,51 +2775,9 @@ def timeline_v2():
       setTimeout(() => toast.remove(), 4000);
     }
     
-    // AI Config Modal
-    function showAIConfig() {
-      const modal = document.getElementById('configModalOverlay');
-      
-      // Load current config
-      if (aiConfig) {
-        document.getElementById('aiProvider').value = aiConfig.provider || 'gemini';
-      }
-      
-      modal.classList.add('show');
-    }
-    
-    function closeAIConfig() {
-      document.getElementById('configModalOverlay').classList.remove('show');
-      document.getElementById('aiApiKey').value = '';
-    }
-    
-    async function saveAIConfig() {
-      const provider = document.getElementById('aiProvider').value;
-      const apiKey = document.getElementById('aiApiKey').value;
-      
-      if (!apiKey) {
-        showToast('Please enter an API key', 'error');
-        return;
-      }
-      
-      try {
-        const response = await fetch('/api/config', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({provider, api_key: apiKey})
-        });
-        
-        if (response.ok) {
-          aiConfig = {provider, api_key: '***'};
-          closeAIConfig();
-          showToast('AI settings saved successfully!', 'success');
-        } else {
-          showToast('Failed to save settings', 'error');
-        }
-      } catch (error) {
-        showToast('Error: ' + error.message, 'error');
-      }
-    }
-    
+    // AI OCR uses the same workspace as all other preferences.
+    function showAIConfig() { return openSettings('ai', 'ocr'); }
+
     function copyExtractedText() {
       const text = _dialogShownText();
       if (!text) return;
@@ -3020,145 +2802,10 @@ def timeline_v2():
 
     
 
-    // Settings Logic
-    function openSettings() {
-        document.getElementById('settingsModalOverlay').classList.add('show');
-        // Load retention
-        fetch('/api/settings/retention')
-            .then(r => r.json())
-            .then(data => {
-                document.getElementById('retentionSelect').value = data.days;
-            });
-        // Load interval
-        fetch('/api/settings/interval')
-            .then(r => r.json())
-            .then(data => {
-                const input = document.getElementById('intervalInput');
-                input.value = data.interval;
-                checkIntervalWarning(data.interval);
-            });
-        // Load quality
-        fetch('/api/settings/quality')
-            .then(r => r.json())
-            .then(data => {
-                document.getElementById('qualitySelect').value = data.quality;
-            });
-        // Load OCR cooldown
-        fetch('/api/settings/ocr-cooldown')
-            .then(r => r.json())
-            .then(data => {
-                document.getElementById('ocrCooldownInput').value = data.ocr_cooldown;
-            });
-        // Load OCR compute mode
-        fetch('/api/settings/ocr-compute-mode')
-            .then(r => r.json())
-            .then(data => {
-                document.getElementById('ocrComputeModeSelect').value = data.ocr_compute_mode;
-                const safety = data.ocr_safety || {};
-                const lowDisk = safety.disk_free_bytes < safety.minimum_free_bytes;
-                document.getElementById('ocrSafetyWarning').style.display = safety.paused || lowDisk ? 'block' : 'none';
-                document.getElementById('ocrSafetyReason').textContent = lowDisk
-                    ? 'Text recognition is paused until at least 10 GiB of disk space is available.'
-                    : (safety.reason || '');
-                document.getElementById('ocrSafetyResume').style.display = safety.paused ? 'inline-block' : 'none';
-                document.getElementById('ocrSafetyResume').disabled = lowDisk;
-            });
-        // Load skip incognito
-        fetch('/api/settings/skip_incognito')
-            .then(r => r.json())
-            .then(data => {
-                document.getElementById('skipIncognitoCheckbox').checked = data.skip_incognito;
-            });
-        // Load port
-        fetch('/api/settings/port')
-            .then(r => r.json())
-            .then(data => {
-                document.getElementById('portInput').value = data.port;
-            });
-        // Load Apple Vision setting
-        fetch('/api/settings/apple_vision')
-          .then(r => r.json())
-          .then(d => {
-            const section = document.getElementById('ocrEngineSection');
-            const cb = document.getElementById('useAppleVisionCheckbox');
-            if (d.available) {
-              section.style.display = '';
-              cb.checked = !!d.enabled;
-            } else {
-              section.style.display = 'none';
-            }
-          })
-          .catch(e => console.warn('apple_vision settings fetch failed', e));
-    }
+    // Preferences logic lives in its own controller.
+    function openSettings(section = 'general', ai) { return window.openrelifeSettings.open(section, ai); }
+    function closeSettings() { return window.openrelifeSettings.close(); }
 
-    function checkIntervalWarning(val) {
-        const warning = document.getElementById('intervalWarning');
-        if (parseInt(val) < 3) {
-            warning.style.display = 'block';
-        } else {
-            warning.style.display = 'none';
-        }
-    }
-
-    function closeSettings() {
-        document.getElementById('settingsModalOverlay').classList.remove('show');
-    }
-
-    function resumeOcrSafety() {
-        const mode = document.getElementById('ocrComputeModeSelect').value;
-        if (mode === 'disabled') {
-            showToast('Choose an enabled processing mode before resuming.', 'warning');
-            return;
-        }
-        fetch('/api/settings/ocr-compute-mode', {
-            method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ocr_compute_mode: mode})
-        }).then(r => r.json()).then(data => {
-            if (!data.success) throw new Error(data.error || 'Resume failed');
-            document.getElementById('ocrSafetyWarning').style.display = 'none';
-            showToast('Text recognition resumed.', 'success');
-        }).catch(() => showToast('Could not resume text recognition.', 'error'));
-    }
-
-    function saveSettings() {
-        const days = document.getElementById('retentionSelect').value;
-        const interval = document.getElementById('intervalInput').value;
-
-        fetch('/api/settings', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                retention_days: days,
-                interval: interval,
-                quality: document.getElementById('qualitySelect').value,
-                ocr_cooldown: document.getElementById('ocrCooldownInput').value,
-                ocr_compute_mode: document.getElementById('ocrComputeModeSelect').value,
-                skip_incognito: document.getElementById('skipIncognitoCheckbox').checked,
-                port: document.getElementById('portInput').value,
-                use_apple_vision: document.getElementById('useAppleVisionCheckbox').checked
-            })
-        })
-        .then(r => r.json())
-        .then(result => {
-             if(result.success) {
-                if (result.restart_required) {
-                    showToast('Settings saved. Restart required for port change.', 'warning');
-                } else {
-                    showToast('Settings saved successfully!', 'success');
-                }
-                closeSettings();
-            } else {
-                showToast('Error saving settings: ' + result.error, 'error');
-            }
-        })
-
-        .catch(err => {
-            console.error(err);
-            showToast('Failed to save settings', 'error');
-        });
-    }
-
-    
     // Calendar Logic
     let calendarDate = new Date();
     // Pre-process active days for faster lookup
@@ -3292,9 +2939,6 @@ def timeline_v2():
         closeTextDialog();
         hidePaletteActions();
 
-        // Close AI config
-        closeAIConfig();
-        
         // Close text popup
         closeTextPopup();
         
@@ -3694,35 +3338,6 @@ def timeline():
       </div>
     </div>
     
-    <!-- AI Config Modal -->
-    <div class="text-popup-overlay" id="aiConfigOverlay" onclick="closeAIConfig()"></div>
-    <div class="text-popup" id="aiConfigModal">
-      <div class="text-popup-header">
-        <strong>AI OCR Settings</strong>
-        <button type="button" class="close" onclick="closeAIConfig()">&times;</button>
-      </div>
-      <div class="text-popup-body">
-        <div class="form-group">
-          <label>AI Provider</label>
-          <select class="form-control" id="aiProvider">
-            <option value="gemini">Google Gemini</option>
-            <option value="openai">OpenAI (GPT-4o)</option>
-            <option value="claude">Anthropic Claude</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label>API Key</label>
-          <input type="password" class="form-control" id="aiApiKey" placeholder="Enter your API key">
-          <small class="form-text text-muted">Your API key is stored locally and never sent to our servers.</small>
-        </div>
-      </div>
-      <div class="text-popup-footer">
-        <button class="btn btn-sm btn-secondary" onclick="closeAIConfig()">Cancel</button>
-        <button class="btn btn-sm btn-primary" onclick="saveAIConfig()">
-          <i class="bi bi-save"></i> Save
-        </button>
-      </div>
-    </div>
   </div>
   <script>
     const timestamps = {{ timestamps|tojson }};
@@ -4083,55 +3698,7 @@ def timeline():
       }
     }
     
-    function showAIConfig() {
-      const modal = document.getElementById('aiConfigModal');
-      const overlay = document.getElementById('aiConfigOverlay');
-      
-      if (aiConfig) {
-        document.getElementById('aiProvider').value = aiConfig.provider || 'gemini';
-        // Don't show the masked key
-        document.getElementById('aiApiKey').value = '';
-        document.getElementById('aiApiKey').placeholder = aiConfig.api_key === '***' ? 'Enter new API key' : 'Enter your API key';
-      }
-      
-      modal.classList.add('show');
-      overlay.classList.add('show');
-    }
-    
-    function closeAIConfig() {
-      const modal = document.getElementById('aiConfigModal');
-      const overlay = document.getElementById('aiConfigOverlay');
-      modal.classList.remove('show');
-      overlay.classList.remove('show');
-    }
-    
-    async function saveAIConfig() {
-      const provider = document.getElementById('aiProvider').value;
-      const apiKey = document.getElementById('aiApiKey').value;
-      
-      if (!apiKey) {
-        alert('Please enter an API key');
-        return;
-      }
-      
-      try {
-        const response = await fetch('/api/config', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({provider, api_key: apiKey})
-        });
-        
-        if (response.ok) {
-          aiConfig = {provider, api_key: '***'};
-          alert('AI settings saved successfully!');
-          closeAIConfig();
-        } else {
-          alert('Failed to save settings');
-        }
-      } catch (error) {
-        alert('Error saving settings: ' + error.message);
-      }
-    }
+    function showAIConfig() { window.location.href = '/?settings=ai-ocr'; }
 
     // Initialize the slider with a default value
     slider.value = timestamps.length - 1;
@@ -4463,10 +4030,13 @@ def ai_config():
         return jsonify({'provider': 'gemini', 'api_key': ''})
     
     elif request.method == "POST":
-        data = request.json
-        import json
-        with open(config_path, 'w') as f:
-            json.dump(data, f)
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or data.get('provider') not in ('gemini', 'openai', 'claude'):
+            return jsonify({'error': 'Choose a supported AI OCR provider'}), 400
+        key = data.get('api_key')
+        if not isinstance(key, str) or not key.strip() or key.strip() == '***' or len(key) > 10000:
+            return jsonify({'error': 'Enter a valid provider key'}), 400
+        _save_settings_atomically(config_path, {'provider': data['provider'], 'api_key': key.strip()})
         return jsonify({'success': True})
 
 
@@ -4731,19 +4301,11 @@ def api_settings_port():
         return jsonify({'port': port})
 
 
-@app.route("/api/settings", methods=["POST"])
+@app.route("/api/settings", methods=["GET", "POST"])
 def api_update_settings():
-    """Unified endpoint to update all settings atomically"""
+    """Read preferences or validate and persist an app preference patch."""
     settings_path = os.path.join(appdata_folder, "settings.json")
     import json
-    
-    data = request.json
-    restart_required = False
-    if 'retention_days' in data:
-        try:
-            retention_days = validate_days(data['retention_days'])
-        except ValueError as error:
-            return jsonify({'error': str(error)}), 400
     
     # Load current settings
     settings = {}
@@ -4753,47 +4315,60 @@ def api_update_settings():
                 content = f.read().strip()
                 if content:
                     settings = json.loads(content)
-        except Exception:
-            pass # Start fresh if corrupt
+        except (OSError, ValueError):
+            return jsonify({'error': 'Saved settings could not be read; no preferences were changed'}), 500
+    if not isinstance(settings, dict):
+        return jsonify({'error': 'Saved settings must contain a JSON object'}), 500
+
+    if request.method == 'GET':
+        return jsonify({
+            'retention_days': settings.get('retention_days', -1),
+            'interval': get_screenshot_interval(), 'quality': get_screenshot_quality(),
+            'ocr_cooldown': get_ocr_cooldown(), 'ocr_compute_mode': get_ocr_compute_mode(),
+            'use_apple_vision': get_use_apple_vision(),
+            'apple_vision_available': is_apple_vision_available(),
+            'skip_incognito': get_skip_incognito_recording(), 'port': settings.get('server_port', 8082),
+            'ocr_safety': get_ocr_safety_status(), 'cleanup': retention_manager.status(),
+            'storage_path': appdata_folder, 'version': app_version(),
+        })
+    try:
+        data = validate_patch(request.get_json(silent=True))
+    except ValueError as error:
+        return jsonify({'error': str(error)}), 400
+    restart_required = False
     
     # Update Interval
     if 'interval' in data:
         interval = int(data['interval'])
-        set_screenshot_interval(interval)
         settings['screenshot_interval'] = interval
         
     # Update Retention
     if 'retention_days' in data:
-        settings['retention_days'] = retention_days
+        settings['retention_days'] = data['retention_days']
         
     # Update Quality
     if 'quality' in data:
         quality = data['quality']
         if quality in ['low', 'medium', 'high']:
-            set_screenshot_quality(quality)
             settings['screenshot_quality'] = quality
 
     # Update OCR Cooldown
     if 'ocr_cooldown' in data:
         cooldown = int(data['ocr_cooldown'])
-        set_ocr_cooldown(cooldown)
         settings['ocr_cooldown'] = cooldown
 
     # Update OCR Compute Mode
     if 'ocr_compute_mode' in data:
         mode = data['ocr_compute_mode']
-        set_ocr_compute_mode(mode)
         settings['ocr_compute_mode'] = mode
 
     # Update Apple Vision OCR engine
     if 'use_apple_vision' in data:
-        set_use_apple_vision(bool(data['use_apple_vision']))
         settings['use_apple_vision'] = bool(data['use_apple_vision'])
 
     # Update Skip Incognito
     if 'skip_incognito' in data:
         skip = bool(data['skip_incognito'])
-        set_skip_incognito_recording(skip)
         settings['skip_incognito'] = skip
 
     # Update Port
@@ -4813,6 +4388,14 @@ def api_update_settings():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
+    # Apply live values only after persistence succeeds. Saving an unrelated
+    # preference must never reset the OCR failure latch.
+    setters = {'interval': set_screenshot_interval, 'quality': set_screenshot_quality,
+               'ocr_cooldown': set_ocr_cooldown, 'ocr_compute_mode': set_ocr_compute_mode,
+               'use_apple_vision': set_use_apple_vision, 'skip_incognito': set_skip_incognito_recording}
+    for key, setter in setters.items():
+        if key in data:
+            setter(data[key])
     if 'retention_days' in data:
         retention_manager.request_cleanup()
     return jsonify({'success': True, 'restart_required': restart_required})

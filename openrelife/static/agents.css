@@ -62,3 +62,4 @@
 .agent-delete-thumbs img { display:block; width:72px; height:46px; object-fit:cover; }
 .agent-delete-thumbs span { display:block; font-size:9px; }
 @media(max-width:600px) { .agent-delete-preview { bottom:125px; } }
+.agent-panel .agent-configure { display:inline-flex; align-items:center; gap:8px; margin:0 0 20px; padding:0; background:none; border:0; color:#acafff; font-size:13px; }

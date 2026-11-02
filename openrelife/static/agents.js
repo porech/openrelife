@@ -1,7 +1,7 @@
 /* Agent commands and app-owned deletion previews. No model output is evaluated. */
 (() => {
   const el = id => document.getElementById(id);
-  let settings, activeRun, timer, originalTimeline, lastAnswer, lastEvidence;
+  let activeRun, timer, originalTimeline, lastAnswer, lastEvidence;
   let hoverTimer, previewLink;
   let busy = false, stopping = false, completedRun;
   const ui = window.openrelifeAgentUI = { preview: null, exitPreview, confirmSelection };
@@ -23,13 +23,6 @@
 
   async function openPanel() {
     el('agentPanel').hidden = false;
-    if (!settings) {
-      settings = await api('/api/agent/settings');
-      el('agentPreset').value = settings.preset;
-      el('agentCommand').value = settings.command;
-      el('agentTimeout').value = settings.timeout_seconds;
-      el('agentMcpCommand').textContent = settings.mcp_command.map(argument => JSON.stringify(argument)).join(' ');
-    }
     const selections = await loadSelections();
     if (!activeRun && !busy && !el('agentQuestion').value) {
       const latest = selections.find(item => item.context_available);
@@ -54,16 +47,7 @@
       askFromSearch();
     }
   }, true);
-  el('agentPreset').onchange = () => {
-    el('agentCommand').value = settings.presets[el('agentPreset').value];
-  };
-  el('agentSave').onclick = async () => {
-    try {
-      settings = await api('/api/agent/settings', { preset: el('agentPreset').value,
-        command: el('agentCommand').value, timeout_seconds: Number(el('agentTimeout').value) });
-      message('Command saved');
-    } catch (error) { message(error); }
-  };
+  el('agentConfigure').onclick = () => window.openrelifeSettings.open('ai', 'agent');
   el('agentStart').onclick = () => start().catch(message);
   function setRunState(running) {
     busy = running;
