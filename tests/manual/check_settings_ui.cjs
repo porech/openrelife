@@ -75,6 +75,8 @@ app.whenReady().then(async()=>{
   if(await evaluate('document.getElementById("settingsError").hidden')!==true)throw new Error('Preferences failed to load');
   const front=await evaluate(`(()=>{const n=document.querySelector('.preferences');const r=n.getBoundingClientRect();return document.elementFromPoint(r.x+r.width/2,r.y+30).closest('.preferences')!==null;})()`);
   if(!front)throw new Error('Preferences did not layer above Ask AI');
+  // Let the overlay transition and compositor paint finish before pixel checks.
+  await pause(350);await win.webContents.capturePage();
   const close=await evaluate(`(()=>{const b=document.getElementById('settingsClose').getBoundingClientRect(),s=document.querySelector('#settingsClose svg').getBoundingClientRect();return {x:b.x,y:b.y,width:b.width,height:b.height,dx:(s.x+s.width/2)-(b.x+b.width/2),dy:(s.y+s.height/2)-(b.y+b.height/2)};})()`);
   if(close.width!==close.height||Math.abs(close.dx)>.1||Math.abs(close.dy)>.1)throw new Error('Close icon geometry is not centered');
   const crop={x:Math.floor(close.x),y:Math.floor(close.y),width:Math.ceil(close.x+close.width)-Math.floor(close.x),height:Math.ceil(close.y+close.height)-Math.floor(close.y)};
@@ -85,11 +87,23 @@ app.whenReady().then(async()=>{
   report.checks.push({close_button_geometry:close,close_button_pixels:JSON.parse(execFileSync(python,['-c',pixelCheck,path.join(output,'settings-close-button.png'),JSON.stringify(close),JSON.stringify(crop)],{encoding:'utf8'}))});
   await pause(150);fs.writeFileSync(path.join(output,'ai-settings-desktop.png'),(await win.webContents.capturePage()).toPNG());
   report.checks.push({first_tab:'searchInput',settings_above_agent:true,desktop_width:1280});
-  for(const section of ['general','capture','storage','ai','privacy','advanced']){
+  for(const section of ['general','capture','storage','ai','privacy','permissions','advanced']){
     await click(`[data-settings-section="${section}"]`);
     const geometry=await evaluate(`(()=>{const page=document.querySelector('[data-settings-pane="${section}"]');const shell=document.querySelector('.preferences').getBoundingClientRect();const group=page.querySelector('.preferences-grid')||page.querySelector('.preferences-group')?.parentElement;const nodes=[...page.querySelectorAll('input,textarea,select,button,code')].filter(n=>n.getClientRects().length);return {title:document.getElementById('settingsTitle').textContent,columns:group?getComputedStyle(group).gridTemplateColumns:null,overflow:nodes.filter(n=>{const r=n.getBoundingClientRect();return r.right>shell.right+1||r.left<shell.left-1}).map(n=>n.id)};})()`);
+    const expected=section==='ai'?'AI & agents':section.charAt(0).toUpperCase()+section.slice(1);
+    if(geometry.title!==expected)throw new Error(`Clicked ${section}, but the visible pane is ${geometry.title}`);
     if(geometry.overflow.length)throw new Error(`Horizontal overflow in ${section}`);report.checks.push({section,...geometry});
   }
+  await until(()=>evaluate('!document.getElementById("settingsStorageUsed").textContent.includes("Measuring")'));
+  const storage=await evaluate(`(()=>{const box=document.querySelector('.preferences-storage-summary').getBoundingClientRect(),nav=document.querySelector('.preferences-nav').getBoundingClientRect();return {label:document.getElementById('settingsStorageUsed').textContent,free:document.getElementById('settingsStorageFree').textContent,visible:box.bottom<=nav.bottom&&box.top>=nav.top};})()`);
+  if(!storage.visible||storage.label==='Unavailable')throw new Error('Sidebar storage was not visible with a real measurement');
+  report.checks.push({sidebar_storage:storage});
+  await click('[data-settings-section="permissions"]');
+  await until(()=>evaluate('document.getElementById("settingsTitle").textContent==="Permissions"'));
+  await until(()=>evaluate('document.getElementById("settingsPermissionAccessibility").textContent!=="Checking…"'));
+  report.checks.push({permission_status:await evaluate('({screen:document.getElementById("settingsPermissionScreen").textContent,accessibility:document.getElementById("settingsPermissionAccessibility").textContent})')});
+  await pause(200);await win.webContents.capturePage();
+  fs.writeFileSync(path.join(output,'permissions-desktop.png'),(await win.webContents.capturePage()).toPNG());
   await click('[data-settings-section="ai"]');
   await click('[data-settings-ai="ocr"]');
   if(await evaluate('document.getElementById("aiApiKey").type')!=='password')throw new Error('Key input is not private');

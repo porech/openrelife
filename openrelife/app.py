@@ -36,6 +36,7 @@ from openrelife.screenshot import (
 from openrelife.ocr_safety import OcrSafetyError
 from openrelife.retention import RetentionManager, validate_days
 from openrelife.preferences import app_version, validate_patch
+from openrelife.storage_usage import ScreenshotStorageUsage
 from openrelife.agent import register_agent_routes, control_token_from_parent
 from openrelife.apple_vision_ocr import is_apple_vision_available
 from openrelife.utils import human_readable_time, timestamp_to_human_readable, has_screen_permission, has_accessibility_permission
@@ -44,8 +45,10 @@ from openrelife.ai_ocr import get_ai_provider
 app = Flask(__name__)
 retention_manager = RetentionManager(appdata_folder)
 agent_service = register_agent_routes(app, appdata_folder, control_token_from_parent())
+storage_usage = ScreenshotStorageUsage(screenshots_path)
 from openrelife import database as _database
 _database._delete_observers.append(agent_service.invalidate)
+_database._delete_observers.append(storage_usage.invalidate)
 
 
 def _save_settings_atomically(settings_path, settings):
@@ -2995,6 +2998,7 @@ def timeline_v2():
       document.getElementById('permModalOverlay').classList.remove('show');
     }
     function renderPermChips(perms) {
+      window.openrelifeSettings?.updatePermissions(perms);
       const box = document.getElementById('perm-chips');
       const missing = Object.keys(PERM_META).filter(k => perms[k] === false);
       const want = missing.join(',');
@@ -4402,6 +4406,12 @@ def api_update_settings():
     if 'retention_days' in data:
         retention_manager.request_cleanup()
     return jsonify({'success': True, 'restart_required': restart_required})
+
+
+@app.route('/api/storage/usage')
+def api_storage_usage():
+    """Return cached screenshot accounting; never scan the archive on this request."""
+    return jsonify(storage_usage.snapshot())
 
 
 if __name__ == "__main__":

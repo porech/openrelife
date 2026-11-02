@@ -10,6 +10,7 @@
     storage: ['Storage', 'Manage your archive and how long screenshots are kept.'],
     ai: ['AI & agents', 'Your agent, AI text recognition and MCP, in one place.'],
     privacy: ['Privacy', 'Control what is captured and what can leave your Mac.'],
+    permissions: ['Permissions', 'Manage the macOS access OpenReLife needs.'],
     advanced: ['Advanced', 'Local connection settings and troubleshooting.']
   };
   const modeHelp = {
@@ -21,6 +22,7 @@
   };
   let baseline, loading, saving = false, previousFocus, activeSection = 'general', activeAI = 'agent';
   let commandDrafts = {}, previousPreset;
+  let storageTimer, storageRequest = false;
 
   async function api(path, data) {
     const response = await fetch(path, { method: data ? 'POST' : 'GET',
@@ -30,6 +32,48 @@
     return result;
   }
   function status(text) { el('settingsStatus').textContent = text; }
+  const bytes = value => {
+    if (!Number.isFinite(value)) return '—';
+    const units = ['B','KB','MB','GB','TB']; let size = value, unit = 0;
+    while (size >= 1000 && unit < units.length - 1) { size /= 1000; unit++; }
+    return `${size.toLocaleString(undefined,{maximumFractionDigits:unit > 1 ? 1 : 0})} ${units[unit]}`;
+  };
+  function renderStorage(data) {
+    const known = Number.isFinite(data.screenshots_bytes), total = data.disk_total_bytes, free = data.disk_free_bytes;
+    const partial = data.state === 'partial';
+    const size = known ? `${partial ? '≥ ' : ''}${bytes(data.screenshots_bytes)}` : data.scanning ? 'Measuring…' : 'Unavailable';
+    el('settingsStorageUsed').textContent = size;
+    el('settingsStorageCapacity').textContent = Number.isFinite(total) ? ` / ${bytes(total)}` : '';
+    el('settingsStorageFree').textContent = Number.isFinite(free) ? `${bytes(free)} free` : 'Disk space unavailable';
+    el('settingsStorageDetailImages').textContent = known ? `${size} · ${data.screenshot_count.toLocaleString()} files` : size;
+    el('settingsStorageDetailTotal').textContent = bytes(total); el('settingsStorageDetailFree').textContent = bytes(free);
+    const imageShare = known && total > 0 ? Math.min(100,Math.max(0,data.screenshots_bytes / total * 100)) : 0;
+    const otherShare = known && total > 0 && Number.isFinite(free) ? Math.max(0,Math.min(100-imageShare,(total-free-data.screenshots_bytes)/total*100)) : 0;
+    el('settingsStorageImageFill').style.width = `${imageShare}%`;
+    el('settingsStorageOtherFill').style.width = `${otherShare}%`;
+    const meter = el('settingsStorageMeter');
+    if (known && total > 0) meter.setAttribute('aria-valuenow',imageShare.toFixed(3)); else meter.removeAttribute('aria-valuenow');
+    meter.setAttribute('aria-valuetext',`${size} of screenshot files; disk capacity ${bytes(total)}; ${bytes(free)} free${partial ? '; incomplete count' : ''}`);
+    el('settingsStorageUpdated').textContent = partial ? 'Some files could not be inspected; the size shown is a lower bound.'
+      : data.scanning ? 'Updating the estimate in the background…'
+      : data.updated_at ? `Estimated on-disk size · updated ${new Date(data.updated_at*1000).toLocaleTimeString()}.`
+      : 'Storage usage is currently unavailable.';
+  }
+  async function refreshStorage() {
+    if (overlay.hidden || storageRequest) return;
+    clearTimeout(storageTimer); storageRequest = true;
+    let scanning = false;
+    try { const data = await api('/api/storage/usage'); scanning = data.scanning; renderStorage(data); }
+    catch { renderStorage({state:'error'}); }
+    finally { storageRequest = false; if (!overlay.hidden) storageTimer = setTimeout(refreshStorage,scanning ? 2000 : 30000); }
+  }
+  function updatePermissions(perms) {
+    for (const [key,id] of [['screen','settingsPermissionScreen'],['accessibility','settingsPermissionAccessibility']]) {
+      const value = perms[key], label = el(id);
+      label.textContent = value === true ? 'Granted' : value === false ? 'Not granted' : 'Unavailable';
+      label.classList.toggle('is-granted',value === true); label.classList.toggle('is-missing',value === false);
+    }
+  }
   function error(text, retry = false) {
     el('settingsError').hidden = !text;
     el('settingsError').querySelector('span').textContent = text;
@@ -79,6 +123,7 @@
     overlay.querySelectorAll('[data-settings-ai-pane]').forEach(node => { node.hidden = node.dataset.settingsAiPane !== activeAI; });
     overlay.querySelectorAll('[data-settings-ai]').forEach(button => button.setAttribute('aria-pressed',String(button.dataset.settingsAi === activeAI)));
     form.scrollTop = 0;
+    if (activeSection === 'permissions') pollPermissions();
   }
   function populate() {
     fields.forEach(input => {
@@ -122,6 +167,7 @@
     const alreadyOpen = !overlay.hidden;
     if (!alreadyOpen) previousFocus = document.activeElement;
     overlay.hidden = false; overlay.classList.add('show'); choose(section,ai);
+    refreshStorage();
     overlay.querySelector('[aria-current="page"]').focus({ preventScroll:true });
     if (!baseline || (!alreadyOpen && !isDirty())) await load();
     else refresh();
@@ -129,6 +175,7 @@
   function close() {
     if (saving) return;
     overlay.classList.remove('show'); overlay.hidden = true;
+    clearTimeout(storageTimer);
     el('aiApiKey').value = ''; refresh();
     if (previousFocus?.isConnected && !previousFocus.closest('[hidden]')) previousFocus.focus({ preventScroll:true });
   }
@@ -224,7 +271,7 @@
       }
     }
   },true);
-  window.openrelifeSettings = { open,close,save };
+  window.openrelifeSettings = { open,close,save,updatePermissions };
   // The classic viewer links here rather than retaining another AI settings UI.
   const target = new URLSearchParams(location.search).get('settings');
   if (target === 'ai-ocr') open('ai','ocr');

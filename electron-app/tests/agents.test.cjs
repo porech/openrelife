@@ -141,6 +141,46 @@ test('Command+Comma opens settings from inputs, is advertised in search actions 
   dom.window.close();connections.delete(dom);
 });
 
+test('Screenshot storage is real, bounded by its disk and available from the sidebar', async () => {
+  const dom=await page();const win=dom.window,doc=win.document;
+  await win.openSettings('storage');
+  let usage;
+  await until(async()=>{usage=await api('/api/storage/usage');return !usage.scanning&&usage.state==='ready';});
+  const images=fs.readdirSync(path.join(root,'archive/screenshots'),{withFileTypes:true}).filter(item=>item.isFile()&&/\.(webp|png|jpe?g|tiff|bmp)$/i.test(item.name));
+  assert.equal(usage.screenshot_count,images.length);
+  assert.ok(usage.screenshots_bytes>0);
+  assert.ok(usage.disk_total_bytes>=usage.disk_free_bytes);
+  const unauthorized=await fetch(base+'/api/storage/usage');assert.equal(unauthorized.status,403);
+  await until(()=>!['Measuring…','Unavailable'].includes(doc.getElementById('settingsStorageUsed').textContent));
+  assert.match(doc.getElementById('settingsStorageCapacity').textContent,/\//);
+  assert.match(doc.getElementById('settingsStorageFree').textContent,/free/);
+  assert.ok(Number(doc.getElementById('settingsStorageMeter').getAttribute('aria-valuenow'))>=0);
+  doc.querySelector('[data-settings-section="general"]').click();
+  doc.getElementById('settingsStorageUsageLink').click();
+  assert.equal(doc.querySelector('[data-settings-pane="storage"]').hidden,false);
+  dom.window.close();connections.delete(dom);
+});
+
+test('Dedicated permissions show current grants and use the Electron Accessibility authority', async () => {
+  const dom=await page();const win=dom.window,doc=win.document;
+  const originalFetch=win.fetch,calls=[];let screen=false,hide=0;
+  win.electronAPI={isAccessibilityTrusted:async()=>true,hideWindow:()=>{hide++;}};
+  win.fetch=(url,options={})=>{
+    if(String(url)==='/api/permissions')return Promise.resolve({ok:true,json:async()=>({screen,accessibility:false})});
+    if(String(url)==='/api/open-settings'){calls.push(JSON.parse(options.body));return Promise.resolve({ok:true,json:async()=>({ok:true})});}
+    return originalFetch(url,options);
+  };
+  await win.openSettings('permissions');
+  await until(()=>doc.getElementById('settingsPermissionScreen').textContent==='Not granted');
+  assert.equal(doc.getElementById('settingsPermissionAccessibility').textContent,'Granted');
+  assert.equal(doc.querySelectorAll('[data-settings-pane="privacy"] [data-settings-permission]').length,0);
+  doc.querySelector('[data-settings-permission="screen"]').click();
+  await until(()=>hide===1);assert.deepEqual(calls,[{which:'screen'}]);
+  screen=true;await win.pollPermissions();
+  assert.equal(doc.getElementById('settingsPermissionScreen').textContent,'Granted');
+  dom.window.close();connections.delete(dom);
+});
+
 test('Sidebar settings preserve drafts, layer above Ask AI, and save only changed preferences', async () => {
   const dom = await page(); const win = dom.window, doc = win.document;
   const initial = await api('/api/settings');
