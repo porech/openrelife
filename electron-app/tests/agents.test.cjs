@@ -59,13 +59,14 @@ after(async () => {
   fs.writeFileSync(output, JSON.stringify({ artifact_directory: root, native_visual_test: false }, null, 2));
 });
 
-async function page({ loadPreferences = true } = {}) {
+async function page({ loadPreferences = true, electronAPI } = {}) {
   const response = await fetch(base + '/', { headers: { 'X-OpenReLife-Control': control } });
   assert.equal(response.status, 200);
   const html = await response.text();
   const dom = new JSDOM(html, { url: base, runScripts: 'outside-only', pretendToBeVisual: true });
   connections.add(dom);
   const win = dom.window;
+  if (electronAPI) win.electronAPI = electronAPI;
   for (const link of win.document.querySelectorAll('link[href^="/assets/"]')) {
     const css = await fetch(base + link.getAttribute('href'), { headers: { 'X-OpenReLife-Control': control } }).then(result => result.text());
     const style = win.document.createElement('style'); style.textContent = css; win.document.head.append(style);
@@ -109,6 +110,31 @@ async function saveAgentSettings(win, doc) {
   assert.equal(doc.getElementById('settingsError').hidden, true);
   win.closeSettings();
 }
+
+test('Viewer presentations introduce search once and preserve foreground inputs', async () => {
+  let reset, seen = false, claims = 0;
+  const dom = await page({ loadPreferences: false, electronAPI: {
+    onResetUI: callback => { reset = callback; }, onOpenSettings: () => {},
+    claimSearchIntroduction: async () => { claims++; const first = !seen; seen = true; return first; },
+  } });
+  const win = dom.window, doc = win.document;
+  await reset({ presentation: true });
+  assert.equal(doc.activeElement.id, 'searchInput');
+  assert.equal(doc.getElementById('paletteActions').classList.contains('show'), true);
+  await reset();
+  assert.equal(doc.activeElement, doc.body);
+  assert.equal(doc.getElementById('paletteActions').classList.contains('show'), false);
+  assert.equal(claims, 1, 'Hiding must not consume introduction state');
+  await reset({ presentation: true });
+  assert.equal(doc.activeElement, doc.body);
+  assert.equal(doc.getElementById('paletteActions').classList.contains('show'), false);
+  doc.getElementById('agentPanel').hidden = false;
+  doc.getElementById('agentQuestion').focus();
+  await reset({ presentation: true });
+  assert.equal(doc.activeElement.id, 'agentQuestion');
+  assert.equal(claims, 2, 'Foreground panels must not consume introduction state');
+  dom.window.close(); connections.delete(dom);
+});
 
 test('Escape closes Text on the first press with no search, empty search or active search', async () => {
   const dom=await page(),win=dom.window,doc=win.document;let hidden=0;

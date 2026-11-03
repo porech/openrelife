@@ -20,16 +20,17 @@ function launcher() {
     constructor() {
       this.handlers = {};
       this.webContents = { id: 17, session: { webRequest: { onBeforeSendHeaders: (_, callback) => { sent.interceptor = callback; } } },
-        getURL: () => this.url || 'file://loading.html',
+        getURL: () => this.url || 'file://loading.html', isLoadingMainFrame: () => false,
         on: (name, callback) => { this.handlers[name] = callback; }, setWindowOpenHandler: callback => { sent.openHandler = callback; },
         send: (channel, value) => { (sent.ipc ||= []).push({ channel, value }); } };
       sent.window = this;
     }
-    on() {} once() {} loadFile() {} loadURL(url) { this.url = url; } show() {} focus() {} setSimpleFullScreen() {}
+    on() {} once() {} loadFile() {} loadURL(url) { this.url = new URL(url).href; } isVisible() { return true; } show() {} focus() {} setSimpleFullScreen() {}
   }
   const fakeFs = { mkdirSync() {}, existsSync: () => true,
     readFileSync: () => JSON.stringify({ server_port: 48123 }), createWriteStream: () => ({ write() {} }) };
   const electron = { app, BrowserWindow: Window, screen: { getPrimaryDisplay: () => ({ workAreaSize: { width: 1200, height: 900 } }) },
+    ipcMain: { handle: (channel, callback) => { hooks[channel] = callback; } },
     Menu: { buildFromTemplate: template => template, setApplicationMenu: menu => { sent.applicationMenu = menu; } },
     systemPreferences: { getMediaAccessStatus: () => 'granted' }, desktopCapturer: { getSources: async () => [] },
     dialog: { showMessageBox: () => { sent.dialog = true; return Promise.resolve({ response: 0 }); } } };

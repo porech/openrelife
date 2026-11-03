@@ -20,6 +20,11 @@ same archive operations and filtering semantics.
   needs a temporary pause, install and verify an independent expiry/watchdog
   before pausing and preserve the previous recording state.
 
+- Keep native UI acceptance isolated from the user's desktop: disable test
+  fullscreen transitions and global shortcut registration, and use Chromium
+  focus emulation in a noninteractive window. A transparent fullscreen window
+  can still hide the Dock. Test fullscreen itself only when explicitly needed.
+
 - Assign each agent run an identifier and preserve its execution trace locally:
   selected preset, executable and redacted arguments, query, dataset/time scope,
   public tool calls and normalized filters, result identifiers and counts,

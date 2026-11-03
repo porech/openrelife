@@ -2634,7 +2634,7 @@ def timeline_v2():
       window.electronAPI.onOpenSettings(() => {
           openSettings();
       });
-      window.electronAPI.onResetUI(() => {
+      window.electronAPI.onResetUI(async (options) => {
         // Close the redesigned menu surfaces
         closeTextDialog();
         hidePaletteActions();
@@ -2659,10 +2659,18 @@ def timeline_v2():
           document.getElementById('settingsModalOverlay').classList.contains('show') ||
           document.getElementById('permModalOverlay').classList.contains('show');
         if (!foregroundInput) document.body.focus({ preventScroll: true });
+        if (options?.presentation && !foregroundInput && window.electronAPI.claimSearchIntroduction) {
+          const showIntroduction = await window.electronAPI.claimSearchIntroduction().catch(() => false);
+          // Do not take focus if another panel opened while IPC was pending.
+          if (showIntroduction && document.activeElement === document.body &&
+              document.visibilityState !== 'hidden') searchInput.focus();
+        }
       });
     }
 
     // Init
+    // Keep native first-show focus on the timeline until onboarding or user input.
+    document.body.focus({ preventScroll: true });
     updateDisplay(timestamps[0]);
     updateExtractedText();
 

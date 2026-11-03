@@ -1,6 +1,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
+  claimSearchIntroduction: () => ipcRenderer.invoke('claim-search-introduction'),
   onResetUI: (callback) => ipcRenderer.on('reset-ui', (_event, value) => callback(value)),
   onOpenSettings: (callback) => ipcRenderer.on('open-settings', (_event, value) => callback(value)),
   onOpenFrame: (callback) => ipcRenderer.on('open-frame', (_event, value) => callback(value)),

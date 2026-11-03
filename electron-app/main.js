@@ -1,4 +1,4 @@
-const { app, BrowserWindow, globalShortcut, screen, Tray, Menu, nativeImage, Notification, dialog, systemPreferences, desktopCapturer, shell } = require('electron');
+const { app, BrowserWindow, globalShortcut, screen, Tray, Menu, nativeImage, Notification, dialog, systemPreferences, desktopCapturer, shell, ipcMain } = require('electron');
 const path = require('path');
 const { spawn, exec, execSync } = require('child_process');
 const fs = require('fs');
@@ -27,6 +27,26 @@ let isPaused = false;
 let pauseReminderInterval = null;
 let windowShouldBeVisible = app.commandLine.hasSwitch('show');
 let pendingFrameLink = null;
+
+// Keep this outside the versioned bundle and independent of the backend port.
+ipcMain.handle('claim-search-introduction', (event) => {
+  if (!mainWindow?.isVisible() || event.sender !== mainWindow.webContents ||
+      event.sender.getURL() !== `${openRecallUrl}/`) return false;
+  try {
+    fs.writeFileSync(path.join(app.getPath('userData'), 'search-introduction-seen'), '1\n', { flag: 'wx', mode: 0o600 });
+    return true;
+  } catch (error) {
+    if (error.code !== 'EEXIST') console.warn('Could not save search introduction state:', error.code);
+    return false;
+  }
+});
+
+function resetPresentedViewer() {
+  if (mainWindow?.isVisible() &&
+      mainWindow.webContents.getURL() === `${openRecallUrl}/`) {
+    mainWindow.webContents.send('reset-ui', { presentation: true });
+  }
+}
 
 function openFrameLink(url) {
   try {
@@ -103,6 +123,7 @@ function loadApp(retryCount = 0) {
       if (res.ok) {
         console.log('✅ Backend connected! Loading app...');
         Promise.resolve(mainWindow.loadURL(openRecallUrl)).then(() => {
+          resetPresentedViewer();
           if (pendingFrameLink && mainWindow) {
             mainWindow.webContents.send('open-frame', pendingFrameLink);
             pendingFrameLink = null;
@@ -251,11 +272,11 @@ function showWindow() {
   }
   
   if (mainWindow) {
-    mainWindow.webContents.send('reset-ui');
     // Always fullscreen; missing permissions are shown via in-app chips
     mainWindow.setSimpleFullScreen(true);
     mainWindow.show();
     mainWindow.focus();
+    resetPresentedViewer();
   }
 }
 
@@ -792,7 +813,6 @@ app.whenReady().then(async () => {
   }
 
   // Listen for hide-window from renderer
-  const { ipcMain } = require('electron');
   ipcMain.on('hide-window', () => {
     if (mainWindow && mainWindow.isVisible()) {
       console.log('🔒 ESC pressed in app - hiding window');
