@@ -88,8 +88,10 @@ async function page({ loadPreferences = true } = {}) {
   win.eval(scripts.join('\n'));
   // outside-only intentionally disables inline attributes in jsdom. Bind the
   // product's actual handlers as a browser would, rather than replacing them.
-  for (const element of win.document.querySelectorAll('[onclick]')) {
-    element.onclick = new win.Function('event', element.getAttribute('onclick'));
+  for (const attribute of ['onclick','oninput','onkeydown','onfocus']) {
+    for (const element of win.document.querySelectorAll(`[${attribute}]`)) {
+      element[attribute] = new win.Function('event',element.getAttribute(attribute));
+    }
   }
   if (loadPreferences) {
     await win.openSettings('ai', 'agent');
@@ -107,6 +109,93 @@ async function saveAgentSettings(win, doc) {
   assert.equal(doc.getElementById('settingsError').hidden, true);
   win.closeSettings();
 }
+
+test('Document viewer preserves literal OCR, screenshot context, copy and find semantics', async () => {
+  const dom=await page(),win=dom.window,doc=win.document;
+  const id=manifest.identifiers.document_local,entry=await api('/api/entry/'+id);
+  await win.goToTimestamp(Number(id));
+  await until(()=>doc.getElementById('screenshot').src.endsWith(id+'.webp'));
+  const trigger=doc.querySelector('button[onclick="openTextDialog(false)"]');trigger.focus();trigger.click();
+  await until(()=>doc.getElementById('extractedText').textContent===entry.text);
+  assert.equal(doc.getElementById('textDialogApp').textContent,entry.app);
+  assert.equal(doc.getElementById('textDialogSourceTitle').textContent,'Document fixture <local>');
+  assert.match(doc.getElementById('textDialogImage').src,new RegExp(`/api/frames/${id}/thumbnail$`));
+  assert.equal(doc.querySelector('#extractedText img'),null);
+  assert.equal(doc.querySelector('#extractedText b'),null);
+  assert.equal(win.documentCompromised,undefined);
+  let copied;
+  Object.defineProperty(win.navigator,'clipboard',{configurable:true,value:{writeText:async text=>{copied=text;}}});
+  doc.getElementById('btnCopyText').click();await until(()=>copied===entry.text);
+  assert.equal(copied,entry.text);
+  assert.match(doc.getElementById('textDialogStats').textContent,/10 lines/);
+  const input=doc.getElementById('dialogFindInput');input.value='meeting';input.dispatchEvent(new win.Event('input',{bubbles:true}));
+  assert.equal(doc.querySelectorAll('#extractedText mark').length,3);
+  assert.equal(doc.getElementById('extractedText').textContent,entry.text);
+  doc.getElementById('dialogFindNext').click();assert.equal(doc.getElementById('dialogFindCount').textContent,'2/3');
+  doc.getElementById('modeLabelAi').click();
+  assert.match(doc.getElementById('extractedText').textContent,/No AI transcription/);
+  assert.equal(doc.getElementById('dialogFindCount').textContent,'0/0');
+  assert.equal(doc.getElementById('btnCopyText').disabled,true);
+  doc.getElementById('modeLabelBase').click();assert.equal(doc.getElementById('extractedText').textContent,entry.text);
+  const slider=doc.getElementById('timelineSlider'),before=slider.value;
+  doc.getElementById('textDialogClose').dispatchEvent(new win.KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true,cancelable:true}));
+  assert.equal(slider.value,before);
+  input.focus();input.dispatchEvent(new win.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
+  assert.equal(doc.getElementById('textDialog').classList.contains('show'),true);
+  assert.equal(input.value,'');
+  doc.getElementById('extractedText').dispatchEvent(new win.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
+  assert.equal(doc.getElementById('textDialog').classList.contains('show'),false);
+  assert.equal(doc.getElementById('textDialogImage').getAttribute('src'),null);
+  assert.equal(doc.getElementById('extractedText').textContent,'');
+  assert.equal(doc.activeElement,trigger);
+  dom.window.close();connections.delete(dom);
+});
+
+test('AI document completion stays bound to its requested screenshot after navigation', async () => {
+  const dom=await page(),win=dom.window,doc=win.document;
+  const originalFetch=win.fetch;let release,started=0,requested;
+  const pending=new Promise(resolve=>{release=resolve;});
+  win.fetch=(url,options={})=>{
+    if(String(url)==='/api/config?full=true')return Promise.resolve({ok:true,json:async()=>({provider:'gemini',api_key:'synthetic-key'})});
+    if(String(url)==='/api/ai-ocr'){started++;requested=JSON.parse(options.body);return pending;}
+    return originalFetch(url,options);
+  };
+  const first=manifest.identifiers.document_local,second=manifest.identifiers.document_ai;
+  await win.goToTimestamp(Number(first));doc.querySelector('button[onclick="openTextDialog(false)"]').click();
+  await until(()=>doc.getElementById('textDialogSourceTitle').textContent==='Document fixture <local>');
+  doc.getElementById('btnRunAI').click();await until(()=>started===1);
+  assert.equal(doc.getElementById('btnRunAI').disabled,true);
+  await win.runAIOCR();assert.equal(started,1);
+  assert.equal(String(requested.timestamp),first);
+  win.closeTextDialog();await win.goToTimestamp(Number(second));win.openTextDialog(false);
+  await until(()=>doc.getElementById('textDialogSourceTitle').textContent==='Document with AI text');
+  release({ok:true,json:async()=>({text:'Only the requested frame gets this result',words_coords:[]})});
+  await until(()=>!doc.getElementById('btnRunAI').disabled);
+  doc.getElementById('modeLabelAi').click();
+  assert.equal(doc.getElementById('extractedText').textContent,'AI transcription\n\nMeeting summary & <keep literally>.');
+  win.closeTextDialog();await win.goToTimestamp(Number(first));win.openTextDialog(false);doc.getElementById('modeLabelAi').click();
+  assert.equal(doc.getElementById('extractedText').textContent,'Only the requested frame gets this result');
+  dom.window.close();connections.delete(dom);
+});
+
+test('Document handles empty text, failed copying and a failed AI extraction without losing local OCR', async () => {
+  const dom=await page(),win=dom.window,doc=win.document;
+  await win.goToTimestamp(Number(manifest.identifiers.document_empty));win.openTextDialog(false);
+  await until(()=>doc.getElementById('textDialogSourceTitle').textContent==='Empty text fixture');
+  assert.match(doc.getElementById('extractedText').textContent,/No text available/);
+  assert.equal(doc.getElementById('btnCopyText').disabled,true);
+  win.closeTextDialog();await win.goToTimestamp(Number(manifest.identifiers.document_local));win.openTextDialog(false);
+  const local=(await api('/api/entry/'+manifest.identifiers.document_local)).text;
+  await until(()=>doc.getElementById('extractedText').textContent===local);
+  Object.defineProperty(win.navigator,'clipboard',{value:{writeText:async()=>{throw new Error('Synthetic clipboard denial');}}});
+  doc.getElementById('btnCopyText').click();await until(()=>doc.getElementById('toastContainer').textContent.includes('Could not copy'));
+  const originalFetch=win.fetch;
+  win.fetch=(url,options={})=>String(url)==='/api/config?full=true'?Promise.resolve({ok:true,json:async()=>({provider:'gemini',api_key:'synthetic-key'})}):String(url)==='/api/ai-ocr'?Promise.resolve({ok:false,json:async()=>({error:'Synthetic provider failure'})}):originalFetch(url,options);
+  doc.getElementById('btnRunAI').click();await until(()=>doc.getElementById('toastContainer').textContent.includes('Synthetic provider failure'));
+  assert.equal(doc.getElementById('btnRunAI').disabled,false);
+  assert.equal(doc.getElementById('extractedText').textContent,local);
+  dom.window.close();connections.delete(dom);
+});
 
 test('Command+Comma opens settings from inputs, is advertised in search actions and preserves edits', async () => {
   const dom = await page({ loadPreferences:false }); const win = dom.window, doc = win.document;
