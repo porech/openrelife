@@ -9,7 +9,8 @@
 .preferences-close svg { display:block; width:16px; height:16px; flex-shrink:0; pointer-events:none; }
 .preferences-workspace { display:flex; flex:1; min-height:0; }
 .preferences-nav { width:190px; flex:0 0 190px; display:flex; flex-direction:column; gap:5px; padding:25px 12px 16px; background:var(--pref-side); border-right:1px solid var(--pref-line); overflow:hidden; }
-.preferences-nav-links { display:flex; flex-direction:column; gap:5px; flex:1; min-height:0; overflow-y:auto; }
+/* Leave room inside the scroll viewport for the 2px outline and 3px offset. */
+.preferences-nav-links { display:flex; flex-direction:column; gap:5px; flex:1; min-height:0; overflow-y:auto; padding:6px; margin:-6px; }
 .preferences-nav h2 { font-size:18px; font-weight:600; margin:0 10px 22px; }
 .preferences-nav-group { color:var(--pref-muted); font-size:11px; letter-spacing:.04em; text-transform:uppercase; margin:12px 10px 4px; }
 .preferences-nav button { min-height:42px; display:flex; align-items:center; gap:10px; border:0; border-radius:9px; padding:11px 10px; background:transparent; text-align:left; color:var(--pref-muted); }
