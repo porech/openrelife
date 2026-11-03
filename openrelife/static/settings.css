@@ -59,6 +59,7 @@
 .preferences option { background:var(--pref-field); color:var(--pref-text); }
 .preferences input:disabled, .preferences select:disabled, .preferences textarea:disabled { opacity:.5; }
 .preferences button:disabled { opacity:.45; cursor:default; }
+.preferences button:focus:not(:focus-visible) { outline:none; }
 .preferences button:focus-visible, .preferences input:focus-visible, .preferences select:focus-visible, .preferences textarea:focus-visible, .preferences summary:focus-visible { outline:2px solid var(--pref-accent); outline-offset:3px; }
 .preferences-help { font-size:12px; color:var(--pref-muted); margin-top:12px !important; }
 .preferences-subgroup { margin-top:26px; padding-top:23px; border-top:1px solid var(--pref-line); }
