@@ -2,6 +2,7 @@
 (() => {
   const el = id => document.getElementById(id);
   const overlay = el('settingsModalOverlay');
+  const dialog = overlay.querySelector('[role="dialog"]');
   const form = el('settingsForm');
   const fields = [...form.querySelectorAll('[data-app-setting]')];
   const descriptions = {
@@ -168,7 +169,7 @@
     if (!alreadyOpen) previousFocus = document.activeElement;
     overlay.hidden = false; overlay.classList.add('show'); choose(section,ai);
     refreshStorage();
-    overlay.querySelector('[aria-current="page"]').focus({ preventScroll:true });
+    if (!alreadyOpen) dialog.focus({ preventScroll:true });
     if (!baseline || (!alreadyOpen && !isDirty())) await load();
     else refresh();
   }
@@ -266,6 +267,11 @@
       const focusable = [...overlay.querySelectorAll('button,input,select,textarea,summary')]
         .filter(node => !node.matches(':disabled') && !node.closest('[hidden]') && node.getClientRects().length);
       const first = focusable[0], last = focusable.at(-1);
+      if (document.activeElement === dialog) {
+        event.preventDefault();
+        (event.shiftKey ? last : overlay.querySelector('[aria-current="page"]'))?.focus();
+        return;
+      }
       if (first && ((event.shiftKey && document.activeElement === first) || (!event.shiftKey && document.activeElement === last))) {
         event.preventDefault(); (event.shiftKey ? last : first).focus();
       }

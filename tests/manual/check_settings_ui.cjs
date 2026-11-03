@@ -65,6 +65,9 @@ app.whenReady().then(async()=>{
   if(await evaluate('document.querySelector("#settingsPaletteAction kbd").textContent')!=='⌘,')throw new Error('Settings shortcut absent from search actions');
   await key('Comma',['meta']);await until(()=>evaluate('!document.getElementById("settingsFields").disabled'));
   if(await evaluate('document.getElementById("settingsModalOverlay").hidden'))throw new Error('Command+Comma did not open settings');
+  if(!await evaluate('document.activeElement.matches(".preferences[role=dialog]") && !document.querySelector("#settingsModalOverlay button:focus-visible")'))throw new Error('Opening settings must not outline a control');
+  await key('Tab');
+  if(!await evaluate('document.activeElement.dataset.settingsSection === "general" && document.activeElement.matches(":focus-visible")'))throw new Error('First Tab must focus and outline General');
   await key('Escape');
   await click('#settingsPaletteAction');await until(()=>evaluate('!document.getElementById("settingsModalOverlay").hidden'));
   await key('Escape');

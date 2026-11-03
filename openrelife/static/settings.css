@@ -3,6 +3,7 @@
 #settingsModalOverlay { z-index:10000; }
 #settingsModalOverlay .preferences { --pref-bg:#19191b; --pref-side:#232325; --pref-field:#202023; --pref-text:#ededf1; --pref-muted:#a9a9b5; --pref-line:#38383f; --pref-accent:#acafff; --pref-selected:#343442; background:var(--pref-bg); color:var(--pref-text); width:min(1160px,94vw); height:min(800px,92vh); border:1px solid var(--pref-line); border-radius:16px; box-shadow:0 24px 80px #0008; display:flex; flex-direction:column; overflow:hidden; font-size:14px; }
 .preferences-titlebar { min-height:58px; flex:none; display:flex; justify-content:space-between; align-items:center; padding:12px 18px; border-bottom:1px solid var(--pref-line); }
+#settingsModalOverlay .preferences:focus { outline:none; }
 .preferences-titlebar > span { font-weight:600; display:flex; align-items:center; gap:9px; }
 .preferences button { cursor:pointer; font:inherit; color:inherit; }
 .preferences-close { width:32px; height:32px; flex-shrink:0; padding:0; border:1px solid var(--pref-line); border-radius:9px; background:var(--pref-field); display:flex; align-items:center; justify-content:center; line-height:1; }
