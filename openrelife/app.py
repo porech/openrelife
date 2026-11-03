@@ -1804,12 +1804,8 @@ def timeline_v2():
       if (e.key === 'Escape') {
          let handled = false;
 
-         // In the text dialog: Esc closes the find bar first, then the dialog
-         const findBar = document.getElementById('dialogFind');
-         if (findBar && findBar.classList.contains('show')) {
-           closeDialogFind();
-           handled = true;
-         } else if (isTextDialogOpen()) {
+         // Search is integrated into Text; Escape closes the whole dialog.
+         if (isTextDialogOpen()) {
            closeTextDialog();
            handled = true;
          }

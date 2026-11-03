@@ -75,6 +75,12 @@ app.whenReady().then(async()=>{
   const context=await evaluate(`({app:document.getElementById('textDialogApp').textContent,title:document.getElementById('textDialogSourceTitle').textContent,preview:document.getElementById('textDialogImage').getAttribute('src'),html_nodes:document.querySelectorAll('#extractedText img,#extractedText b').length})`);
   if(context.app!==entry.app||context.title!==entry.title||context.html_nodes)throw new Error('Document context or literal rendering failed');
   report.checks.push({frame:local,context,literal_text_and_whitespace:true});
+  await key('Escape');
+  if(await evaluate('document.getElementById("textDialog").classList.contains("show")'))throw new Error('First Escape failed after opening Text');
+  await click('button[onclick="openTextDialog(false)"]');
+  await click('#dialogFindInput');await key('Escape');
+  if(await evaluate('document.getElementById("textDialog").classList.contains("show")'))throw new Error('First Escape failed with empty search focused');
+  await click('button[onclick="openTextDialog(false)"]');
   await evaluate(`Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>{window.fixtureCopiedText=text;}}})`);
   await click('#btnCopyText');
   if(await evaluate(`window.fixtureCopiedText===${JSON.stringify(entry.text)}`)!==true)throw new Error('Copy did not preserve exact OCR');
@@ -86,7 +92,9 @@ app.whenReady().then(async()=>{
   await click('#dialogFindNext');
   if(await evaluate('document.getElementById("dialogFindCount").textContent')!=='2/3')throw new Error('Find next did not advance');
   await key('Escape');
-  if(await evaluate('!document.getElementById("textDialog").classList.contains("show")'))throw new Error('First Escape closed the document before clearing find');
+  if(await evaluate('document.getElementById("textDialog").classList.contains("show")'))throw new Error('First Escape failed with an active search');
+  await click('button[onclick="openTextDialog(false)"]');
+  await click('#extractedText');
   await key('a',['meta']);
   const selected=await evaluate('({text:window.getSelection().toString(),active:document.activeElement.id,range:window.getSelection().rangeCount?window.getSelection().getRangeAt(0).toString():null})');
   // Chromium omits a final visual newline in Selection.toString(); the DOM
@@ -101,8 +109,16 @@ app.whenReady().then(async()=>{
   await key('Tab');if(await evaluate('document.activeElement.id')!=='textDialogClose')throw new Error('Forward Tab escaped the document');
   await click('#modeLabelAi');
   if(!(await evaluate('document.getElementById("extractedText").textContent')).includes('No AI transcription'))throw new Error('Missing AI state not shown');
-  await click('#modeLabelBase');
-  report.checks.push({find_matches:3,find_next:true,escape_clears_find:true,select_all_exact:true,timeline_unchanged:true,focus_trap:true,no_ai_state:true});
+  await key('Escape');
+  if(await evaluate('document.getElementById("textDialog").classList.contains("show")'))throw new Error('First Escape failed from an AI source tab');
+  await click('button[onclick="openTextDialog(false)"]');await click('#modeLabelBase');
+  await key('Comma',['meta']);await until(()=>evaluate('!document.getElementById("settingsModalOverlay").hidden'));
+  await key('Escape');
+  if(await evaluate('!document.getElementById("textDialog").classList.contains("show")'))throw new Error('Settings Escape also closed the Text window underneath');
+  await key('Escape');
+  if(await evaluate('document.getElementById("textDialog").classList.contains("show")'))throw new Error('Escape failed after closing foreground Settings');
+  await click('button[onclick="openTextDialog(false)"]');
+  report.checks.push({find_matches:3,find_next:true,escape_closes_plain_empty_search_active_search_and_ai_tab:true,foreground_settings_escape_order:true,select_all_exact:true,timeline_unchanged:true,focus_trap:true,no_ai_state:true});
   const close=await evaluate(`(()=>{const b=document.getElementById('textDialogClose').getBoundingClientRect(),s=document.querySelector('#textDialogClose svg').getBoundingClientRect();return {dx:s.x+s.width/2-b.x-b.width/2,dy:s.y+s.height/2-b.y-b.height/2,square:b.width===b.height};})()`);
   if(!close.square||Math.abs(close.dx)>.1||Math.abs(close.dy)>.1)throw new Error('Close button is not square and centered');
   report.checks.push({close_icon:close});

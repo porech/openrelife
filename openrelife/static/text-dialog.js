@@ -92,12 +92,12 @@
     const current = body.querySelector('mark.current');
     if (current && (current.offsetTop < body.scrollTop + 16 || current.offsetTop > body.scrollTop + body.clientHeight - 48)) body.scrollTop = Math.max(0,current.offsetTop-body.clientHeight/2);
   }
-  function openFind() { if (!isOpen()) return; el('dialogFind').classList.add('show'); el('dialogFindInput').focus(); el('dialogFindInput').select(); render(); }
+  function openFind() { if (!isOpen()) return; el('dialogFindInput').focus(); el('dialogFindInput').select(); render(); }
   function closeFind(focus = true) {
-    el('dialogFind').classList.remove('show'); el('dialogFindInput').value = ''; findCount = findCurrent = 0;
+    el('dialogFindInput').value = ''; findCount = findCurrent = 0;
     if (isOpen()) { render(); if (focus) body.focus({preventScroll:true}); }
   }
-  function find() { el('dialogFind').classList.add('show'); render(true); }
+  function find() { render(true); }
   function step(direction) { if (!findCount) return; findCurrent = (findCurrent+direction+findCount)%findCount; render(); }
   function findKey(event) { if (event.key === 'Enter') { event.preventDefault(); step(event.shiftKey ? -1 : 1); } }
   async function copy() {
@@ -112,7 +112,8 @@
     if (event.isComposing || !isOpen() || el('settingsModalOverlay').classList.contains('show')) return;
     if (event.key === 'Escape') {
       event.preventDefault(); event.stopImmediatePropagation();
-      if (el('dialogFind').classList.contains('show')) closeFind(); else close();
+      // The integrated find field shares the dialog's single-step Escape.
+      close();
       return;
     }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'f') { event.preventDefault(); event.stopImmediatePropagation(); openFind(); }

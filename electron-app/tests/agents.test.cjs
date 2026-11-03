@@ -110,6 +110,28 @@ async function saveAgentSettings(win, doc) {
   win.closeSettings();
 }
 
+test('Escape closes Text on the first press with no search, empty search or active search', async () => {
+  const dom=await page(),win=dom.window,doc=win.document;let hidden=0;
+  win.electronAPI={hideWindow:()=>{hidden++;}};
+  await win.goToTimestamp(Number(manifest.identifiers.document_local));
+  const trigger=doc.querySelector('button[onclick="openTextDialog(false)"]');
+  for(const scenario of ['plain','empty search','active search','AI tab']){
+    trigger.focus();trigger.click();
+    await until(()=>doc.getElementById('textDialog').classList.contains('show'));
+    if(scenario.includes('search')){
+      const input=doc.getElementById('dialogFindInput');input.focus();
+      if(scenario==='active search'){input.value='meeting';input.dispatchEvent(new win.Event('input',{bubbles:true}));}
+    }
+    if(scenario==='AI tab')doc.getElementById('modeLabelAi').click();
+    doc.activeElement.dispatchEvent(new win.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
+    assert.equal(doc.getElementById('textDialog').classList.contains('show'),false,scenario);
+    assert.equal(doc.getElementById('dialogFindInput').value,'');
+    assert.equal(hidden,0,'Escape also hid the underlying app');
+    assert.equal(doc.activeElement,trigger);
+  }
+  dom.window.close();connections.delete(dom);
+});
+
 test('Document viewer preserves literal OCR, screenshot context, copy and find semantics', async () => {
   const dom=await page(),win=dom.window,doc=win.document;
   const id=manifest.identifiers.document_local,entry=await api('/api/entry/'+id);
@@ -141,10 +163,8 @@ test('Document viewer preserves literal OCR, screenshot context, copy and find s
   doc.getElementById('textDialogClose').dispatchEvent(new win.KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true,cancelable:true}));
   assert.equal(slider.value,before);
   input.focus();input.dispatchEvent(new win.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
-  assert.equal(doc.getElementById('textDialog').classList.contains('show'),true);
-  assert.equal(input.value,'');
-  doc.getElementById('extractedText').dispatchEvent(new win.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
   assert.equal(doc.getElementById('textDialog').classList.contains('show'),false);
+  assert.equal(input.value,'');
   assert.equal(doc.getElementById('textDialogImage').getAttribute('src'),null);
   assert.equal(doc.getElementById('extractedText').textContent,'');
   assert.equal(doc.activeElement,trigger);
