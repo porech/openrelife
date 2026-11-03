@@ -6,7 +6,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { EventEmitter } = require('node:events');
 
-function launcher() {
+function launcher({ fetchHandler } = {}) {
   const hooks = {}, requests = [], sent = {};
   const switches = { 'storage-path': '/fixture-archive', 'backend-python': '/fixture-python/bin/python', 'no-capture': true };
   const app = { isPackaged: true, commandLine: { getSwitchValue: name => switches[name] || '', hasSwitch: name => !!switches[name] },
@@ -25,7 +25,10 @@ function launcher() {
         send: (channel, value) => { (sent.ipc ||= []).push({ channel, value }); } };
       sent.window = this;
     }
-    on() {} once() {} loadFile() {} loadURL(url) { this.url = new URL(url).href; } isVisible() { return true; } show() {} focus() {} setSimpleFullScreen() {}
+    on() {} once() {} loadFile() {} loadURL(url) { this.url = new URL(url).href; }
+    isVisible() { return !!this.visible; } show() { this.visible = true; sent.shows = (sent.shows || 0) + 1; }
+    hide() { this.visible = false; sent.hides = (sent.hides || 0) + 1; }
+    focus() {} setSimpleFullScreen() {} setVisibleOnAllWorkspaces() {}
   }
   const fakeFs = { mkdirSync() {}, existsSync: () => true,
     readFileSync: () => JSON.stringify({ server_port: 48123 }), createWriteStream: () => ({ write() {} }) };
@@ -41,8 +44,8 @@ function launcher() {
       spawn: (command, args, options) => { sent.spawn = { command, args, options }; return child; } };
     return require(name);
   }, console: { log() {}, error() {} }, process: { platform: 'darwin', arch: 'arm64', env: { PATH: '/usr/bin' }, resourcesPath: '/bundle' },
-    __dirname: path.resolve(__dirname, '..'), Headers, URL, setTimeout, clearTimeout,
-    fetch: async (url, options) => { requests.push({ url, options }); return { ok: true }; } });
+    __dirname: path.resolve(__dirname, '..'), Headers, URL, AbortSignal, setTimeout, clearTimeout,
+    fetch: async (url, options) => { requests.push({ url, options }); return fetchHandler ? fetchHandler(url, options) : { ok: true }; } });
   vm.runInContext(fs.readFileSync(path.resolve(__dirname, '../main.js'), 'utf8'), context);
   return { context, hooks, requests, sent, child, app };
 }
@@ -80,17 +83,57 @@ test('Native quit marks intentional shutdown before backend exits', async () => 
   assert.equal(sent.dialog, undefined);
 });
 
-test('Settings has a native Command+Comma menu action and preserves an already visible workspace', () => {
+test('Settings has a native Command+Comma menu action and preserves an already visible workspace', async () => {
   const { context, sent } = launcher();
   vm.runInContext('updateServerConfig();createWindow();createMenu()', context);
   const settings = sent.applicationMenu.flatMap(item => item.submenu || []).find(item => item.label === 'Settings…');
   assert.equal(settings.accelerator, 'CommandOrControl+,');
-  settings.click();
+  await settings.click();
   assert.equal(sent.ipc.at(-1).channel, 'open-settings');
   const resets = sent.ipc.filter(item => item.channel === 'reset-ui').length;
-  settings.click();
+  await settings.click();
   assert.equal(sent.ipc.at(-1).channel, 'open-settings');
   assert.equal(sent.ipc.filter(item => item.channel === 'reset-ui').length, resets);
+});
+
+test('Viewer waits for capture protection and serializes delayed hide acknowledgements', async () => {
+  let releaseHide;
+  const { context, sent, requests } = launcher({ fetchHandler: (url, options) => {
+    if (url.endsWith('/api/viewer-open') && !JSON.parse(options.body).open) {
+      return new Promise(resolve => { releaseHide = () => resolve({ ok: true }); });
+    }
+    return { ok: true };
+  } });
+  vm.runInContext('updateServerConfig();createWindow()', context);
+  const hidden = vm.runInContext('setViewerOpen(false)', context);
+  await new Promise(resolve => setImmediate(resolve));
+  const showing = vm.runInContext('showWindow()', context);
+  assert.equal(sent.shows || 0, 0, 'Window must stay hidden until the backend acknowledges');
+  releaseHide(); await hidden; await showing;
+  assert.equal(sent.shows, 1);
+  assert.deepEqual(requests.filter(item => item.url.endsWith('/api/viewer-open')).map(item => JSON.parse(item.options.body).open), [false, true]);
+});
+
+test('Obsolete failed updates do not retry after a newer viewer state', async () => {
+  const states = [];
+  const { context, sent } = launcher({ fetchHandler: (url, options) => {
+    if (url.endsWith('/api/viewer-open')) {
+      const open = JSON.parse(options.body).open; states.push(open);
+      return { ok: open, status: open ? 200 : 503 };
+    }
+    return { ok: true };
+  } });
+  vm.runInContext('updateServerConfig();createWindow()', context);
+  const hidden = vm.runInContext('setViewerOpen(false)', context);
+  await new Promise(resolve => setImmediate(resolve));
+  await vm.runInContext('showWindow()', context); await hidden;
+  assert.deepEqual(states, [false, true]);
+  assert.equal(sent.shows, 1);
+  vm.runInContext('hideWindow()', context);
+  await vm.runInContext('showWindow()', context);
+  await new Promise(resolve => setTimeout(resolve, 200));
+  assert.equal(sent.hides || 0, 0, 'A cancelled hide timer must not hide a reopened viewer');
+  assert.deepEqual(states, [false, true]);
 });
 
 test('Screenshot links accept only frame instants and survive startup', async () => {

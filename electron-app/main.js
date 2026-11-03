@@ -27,6 +27,11 @@ let isPaused = false;
 let pauseReminderInterval = null;
 let windowShouldBeVisible = app.commandLine.hasSwitch('show');
 let pendingFrameLink = null;
+let viewerDesired = null;
+let viewerRevision = 0;
+let viewerSync = Promise.resolve(false);
+let presentationRevision = 0;
+let hideTimer = null;
 
 // Keep this outside the versioned bundle and independent of the backend port.
 ipcMain.handle('claim-search-introduction', (event) => {
@@ -122,20 +127,13 @@ function loadApp(retryCount = 0) {
     .then(res => {
       if (res.ok) {
         console.log('✅ Backend connected! Loading app...');
-        Promise.resolve(mainWindow.loadURL(openRecallUrl)).then(() => {
-          resetPresentedViewer();
+        Promise.resolve(mainWindow.loadURL(openRecallUrl)).then(async () => {
+          if (windowShouldBeVisible) await showWindow();
           if (pendingFrameLink && mainWindow) {
             mainWindow.webContents.send('open-frame', pendingFrameLink);
             pendingFrameLink = null;
           }
         });
-        if (windowShouldBeVisible && process.platform === 'darwin') {
-           mainWindow.setSimpleFullScreen(true);
-        }
-        if (windowShouldBeVisible) {
-          mainWindow.show();
-          mainWindow.focus();
-        }
       } else {
         throw new Error(`Status check failed: ${res.status} ${res.statusText}`);
       }
@@ -214,20 +212,7 @@ function createWindow() {
 
   mainWindow.once('ready-to-show', () => {
     console.log('✅ Window ready to show');
-    // Enforce fullscreen whenever the window should be visible, regardless of permission
-    if (windowShouldBeVisible && process.platform === 'darwin') {
-        mainWindow.setSimpleFullScreen(true);
-        mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-    }
-    if (windowShouldBeVisible) {
-      mainWindow.show();
-      mainWindow.moveTop();
-      mainWindow.focus();
-      // Force app to active state (especially since we hid dock)
-      if (app.dock.isVisible() === false) {
-          app.focus({ steal: true });
-      }
-    }
+    if (windowShouldBeVisible) showWindow();
   });
 
   mainWindow.on('closed', () => {
@@ -250,40 +235,62 @@ function createWindow() {
   });
 } 
 
-function setViewerOpen(open, attempt = 0) {
-  // Tell the backend whether the viewer window is on screen so the capture loop
-  // never screenshots OpenReLife itself. The backend may still be starting at
-  // launch, so retry briefly — the initial "viewer visible" state must not be lost.
-  backendFetch(`${openRecallUrl}/api/viewer-open`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ open })
-  }).catch(() => {
-    if (attempt < 30) setTimeout(() => setViewerOpen(open, attempt + 1), 500);
+function setViewerOpen(open) {
+  if (viewerDesired === open) return viewerSync;
+  viewerDesired = open;
+  const revision = ++viewerRevision;
+  // Serialize updates: a delayed hide or an obsolete retry must never overtake show.
+  viewerSync = viewerSync.catch(() => false).then(async () => {
+    for (let attempt = 0; attempt <= 30; attempt++) {
+      if (revision !== viewerRevision) return false;
+      try {
+        const response = await backendFetch(`${openRecallUrl}/api/viewer-open`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ open, revision }), signal: AbortSignal.timeout(3000)
+        });
+        if (!response.ok) throw new Error(`Viewer state HTTP ${response.status}`);
+        return revision === viewerRevision;
+      } catch (error) {
+        if (revision !== viewerRevision) return false;
+        if (attempt === 30) {
+          viewerDesired = null;
+          console.error('Could not synchronize viewer capture protection:', error.message);
+          return false;
+        }
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+    }
   });
+  return viewerSync;
 }
 
-function showWindow() {
+async function showWindow() {
   windowShouldBeVisible = true;
-  setViewerOpen(true);
+  clearTimeout(hideTimer);
+  isHiding = false;
+  const revision = ++presentationRevision;
 
   if (mainWindow === null) {
     createWindow();
   }
   
-  if (mainWindow) {
+  const window = mainWindow;
+  const protectedCapture = await setViewerOpen(true);
+  if (protectedCapture && windowShouldBeVisible && revision === presentationRevision && mainWindow === window) {
+    // The backend has invalidated in-flight captures before any app UI is exposed.
     // Always fullscreen; missing permissions are shown via in-app chips
-    mainWindow.setSimpleFullScreen(true);
-    mainWindow.show();
-    mainWindow.focus();
+    window.setSimpleFullScreen(true);
+    if (process.platform === 'darwin') window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    window.show();
+    window.focus();
     resetPresentedViewer();
   }
 }
 
 let isHiding = false;
-function openPreferences() {
+async function openPreferences() {
   // A settings shortcut in an already visible window must preserve its draft.
-  if (!mainWindow || !windowShouldBeVisible) showWindow();
+  if (!mainWindow || !mainWindow.isVisible() || !windowShouldBeVisible) await showWindow();
   else { mainWindow.show(); mainWindow.focus(); }
   if (mainWindow) mainWindow.webContents.send('open-settings');
 }
@@ -292,6 +299,7 @@ function hideWindow() {
   if (isHiding) return;
   isHiding = true;
   windowShouldBeVisible = false;
+  presentationRevision++;
 
   if (mainWindow) {
     try {
@@ -304,7 +312,7 @@ function hideWindow() {
         console.error('Error during hideWindow:', err);
     }
     
-    setTimeout(() => {
+    hideTimer = setTimeout(() => {
       if (mainWindow) {
         mainWindow.hide();
       }

@@ -56,6 +56,9 @@ app.whenReady().then(async () => {
         await win.webContents.executeJavaScript('!!window.openrelifeSettings');
     });
     const evaluate = code => win.webContents.executeJavaScript(code);
+    const captureState = () => evaluate("fetch('/api/recording-status').then(response => response.json())");
+    if (!(await captureState()).viewer_open) throw new Error('Visible viewer lacks acknowledged capture protection');
+    report.checks.push({ startup_capture_protected: true });
     await until(() => evaluate(`document.getElementById('paletteActions').classList.contains('show') === ${phase === 'first'}`));
     await pause(300);
     const state = await evaluate(`({palette:document.getElementById('paletteActions').classList.contains('show'),active:document.activeElement.id||document.activeElement.tagName})`);
@@ -71,6 +74,7 @@ app.whenReady().then(async () => {
     await evaluate('window.electronAPI.hideWindow()');
     await until(() => !win.isVisible());
     await pause(350);
+    await until(async () => !(await captureState()).viewer_open);
     // Exercise the app's supported frame-link presentation path after hiding.
     const id = await evaluate('String(timestamps[0])');
     app.emit('open-url', { preventDefault() {} }, 'openrelife://frame/' + id);
@@ -78,6 +82,7 @@ app.whenReady().then(async () => {
     await pause(300);
     const reopened = await evaluate(`({palette:document.getElementById('paletteActions').classList.contains('show'),active:document.activeElement.tagName})`);
     if (reopened.palette || reopened.active !== 'BODY') throw new Error('Reopening did not leave the timeline free: ' + JSON.stringify(reopened));
+    if (!(await captureState()).viewer_open) throw new Error('Reopened viewer lacks capture protection');
     report.checks.push({ reopened, frame_link_transport: 'native open-url event' });
     await key('Tab', 'Tab', 9);
     report.checks.push({ after_tab: await evaluate(`({active:document.activeElement.id||document.activeElement.tagName,palette:document.getElementById('paletteActions').classList.contains('show')})`) });
@@ -87,6 +92,14 @@ app.whenReady().then(async () => {
     await key('k', 'KeyK', 75, 4);
     if (!await evaluate('document.getElementById("paletteActions").classList.contains("show")')) throw new Error('Command+K did not open actions');
     report.checks.push({ manual_command_k_opens: true, first_tab_search: true });
+    if (!(await captureState()).viewer_open) throw new Error('Open search actions lost capture protection');
+    // Reopen during the delayed hide, as with a repeated global shortcut.
+    await evaluate('window.electronAPI.hideWindow()');
+    await pause(25);
+    app.emit('open-url', { preventDefault() {} }, 'openrelife://frame/' + id);
+    await pause(350);
+    if (!win.isVisible() || !(await captureState()).viewer_open) throw new Error('Rapid hide/show lost capture protection');
+    report.checks.push({ actions_capture_protected: true, rapid_hide_show_protected: true });
     clearTimeout(watchdog);
     finish();
   } catch (error) { clearTimeout(watchdog); finish(error); }

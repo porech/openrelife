@@ -17,6 +17,7 @@ from openrelife.screenshot import (
     get_recording_paused,
     set_recording_paused,
     set_viewer_open,
+    get_viewer_open,
     get_screenshot_interval,
     set_screenshot_interval,
     get_screenshot_quality,
@@ -2870,7 +2871,7 @@ def api_sync():
 
 @app.route("/api/recording-status", methods=["GET"])
 def get_recording_status():
-    return jsonify({"paused": get_recording_paused()})
+    return jsonify({"paused": get_recording_paused(), "viewer_open": get_viewer_open()})
 
 
 @app.route("/api/permissions", methods=["GET"])
@@ -2929,8 +2930,11 @@ def api_viewer_open():
     """The Electron shell reports whether the viewer window is on screen, so the
     capture loop never screenshots the app itself. See screenshot.set_viewer_open."""
     data = request.json or {}
-    set_viewer_open(bool(data.get("open", False)))
-    return jsonify({"viewer_open": bool(data.get("open", False))})
+    revision = data.get('revision')
+    if revision is not None and (type(revision) is not int or revision < 0):
+        return jsonify(error='revision must be a nonnegative integer'), 400
+    actual = set_viewer_open(bool(data.get("open", False)), revision)
+    return jsonify({"viewer_open": actual})
 
 
 @app.route("/api/delete", methods=["POST"])

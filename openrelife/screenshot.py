@@ -199,14 +199,26 @@ def get_recording_paused() -> bool:
 # and the capture loop hard-skips while it is set. This is separate from the manual
 # pause toggle so closing the viewer restores whatever recording state the user chose.
 viewer_open = False
+_viewer_generation = 0
+_viewer_revision = -1
+_viewer_lock = threading.Lock()
 
-def set_viewer_open(open_: bool):
-    global viewer_open
-    viewer_open = bool(open_)
+def set_viewer_open(open_: bool, revision=None):
+    global viewer_open, _viewer_generation, _viewer_revision
+    # The desktop shell waits for this barrier before exposing the window.
+    with _viewer_lock:
+        if revision is not None:
+            if revision <= _viewer_revision:
+                return viewer_open
+            _viewer_revision = revision
+        if viewer_open != bool(open_):
+            _viewer_generation += 1
+        viewer_open = bool(open_)
+        return viewer_open
 
 def get_viewer_open() -> bool:
-    global viewer_open
-    return viewer_open
+    with _viewer_lock:
+        return viewer_open
 
 def set_screenshot_interval(interval: int):
     global screenshot_interval
@@ -257,16 +269,8 @@ def record_screenshots_thread():
     perm_warned = False  # log the "waiting for Screen Recording" state only once
     disk_warned = False
 
-    # Keep only downscaled thumbnails for comparison (~270p instead of 4K)
-    try:
-        if has_screen_permission() and _ocr_guard.capture_available():
-            last_thumbs = [_downscale_for_comparison(s) for s in take_screenshots()]
-            _logger.info(f"Initial screenshots taken, {len(last_thumbs)} monitor(s)")
-        else:
-            last_thumbs = None
-    except Exception as e:
-        _logger.error(f"Failed to take initial screenshots: {e}")
-        last_thumbs = None
+    # Initialize comparison thumbnails through the guarded capture path only.
+    last_thumbs = None
 
     while True:
         try:
@@ -293,7 +297,9 @@ def record_screenshots_thread():
 
             # Never capture while the viewer window is on screen — it fills the
             # display, so a capture would just screenshot OpenReLife itself.
-            if viewer_open:
+            with _viewer_lock:
+                blocked, capture_generation = viewer_open, _viewer_generation
+            if blocked:
                 if cycle_count % 60 == 0:
                     _logger.debug("Viewer open, skipping capture")
                 time.sleep(1)
@@ -328,6 +334,14 @@ def record_screenshots_thread():
                 continue
             disk_warned = False
             screenshots = take_screenshots()
+            active_app_name = get_active_app_name() or "Unknown App"
+            active_window_title = get_active_window_title() or "Unknown Title"
+            with _viewer_lock:
+                invalidated = viewer_open or _viewer_generation != capture_generation
+            if invalidated or is_self_capture(active_app_name, active_window_title):
+                _logger.debug("Discarding capture overlapping the viewer presentation")
+                last_thumbs = None
+                continue
 
             if last_thumbs is None or len(last_thumbs) != len(screenshots):
                 _logger.info(f"Reinitializing thumbnails ({len(screenshots)} monitors)")
@@ -353,15 +367,17 @@ def record_screenshots_thread():
 
                     timestamp = int(time.time() * 1000000)
                     filename = f"{timestamp}.webp"
-                    image.save(
-                        os.path.join(screenshots_path, filename),
-                        format="webp",
-                        **save_kwargs
-                    )
-
-                    active_app_name = get_active_app_name() or "Unknown App"
-                    active_window_title = get_active_window_title() or "Unknown Title"
-                    insert_entry_stub(timestamp, active_app_name, active_window_title)
+                    # Final barrier also covers image processing and multiple displays.
+                    with _viewer_lock:
+                        if viewer_open or _viewer_generation != capture_generation:
+                            last_thumbs = None
+                            break
+                        image.save(
+                            os.path.join(screenshots_path, filename),
+                            format="webp",
+                            **save_kwargs
+                        )
+                        insert_entry_stub(timestamp, active_app_name, active_window_title)
 
                     try:
                         _ocr_queue.put_nowait(timestamp)
