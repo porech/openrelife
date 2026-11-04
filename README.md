@@ -6,47 +6,24 @@
 \____/ .___/\___/_/ /_/_/ |_|\___/_____/_/_/  \___/ 
     /_/                                             
 ```
-_**This project is currently in active development and in an alpha state; expect frequent updates and changes, and please report any issues you may encounter.
-Please read the readme below for more details.**_
 
-**Do you like this project?** Show your support by starring it! ⭐️ Thank you!
-
-> [!IMPORTANT]  
-> **Platform Support**: This application is currently **ONLY** tested and verified on **macOS with Apple Silicon (ARM64)**. Support for Intel Macs, Windows, and Linux is experimental, and needs testing; help is much appreciated.
+**OpenReLife is in active development.** Tested on macOS Apple Silicon (M1);
+Intel builds are available but have not been tested on Intel hardware.
+Windows and Linux support is experimental.
 
 # Take Control of Your Digital Memory
 
-OpenReLife is a fully open-source alternative to proprietary solutions like Microsoft's Windows Recall or Limitless' Rewind.ai, forked from [OpenRecall](https://github.com/openrecall/openrecall). With OpenReLife, you can easily access your digital history, enhancing your memory and productivity without compromising your privacy.
-
-The main goal of this project is to provide an alternative to Rewind.ai, that was recently abandoned and remotely blocked after the company was acquired by Meta; 
-OpenReLife was created to fill this gap as quickly as possible with the best possible UX and features. 
-In future, we plan to change the codebase to enhance DX, but we are currently focused on adding the base features you loved from Rewind.ai, having the best possible experience and making the transition as smooth as possible.
-
-## What does it do?
-
-OpenReLife captures your digital history through regularly taken screenshots. The text and images within these screenshots are analyzed and made searchable, allowing you to quickly find specific information by typing relevant keywords into OpenReLife. You can also manually scroll back through your history to revisit past activities.
-
-## Why Choose OpenReLife?
-
-OpenReLife offers several key advantages over closed-source alternatives:
-
-- **Transparency**: OpenReLife is 100% open-source, allowing you to audit the source code for potential backdoors or privacy-invading features.
-- **Cross-platform Support**: OpenReLife aims to work on Windows, macOS, and Linux. **Currently, the application is officially tested and supported ONLY on macOS Apple Silicon (ARM64).**
-- **Privacy-focused**: Your data is stored locally on your device, no internet connection or cloud is required. 
-- **Smooth experience**: OpenReLife is designed to be smooth and easy to use, with a simple and intuitive interface.
-
-## Status of the project
-
-The software is currently in active development (with a huge help from AI agents). It allows for a good set of features, but has been strictly tested on an **Apple Silicon (M1)** machine only.
+OpenReLife records your screen and makes its text searchable, so you can find
+past work or scroll back through your history. It is an open-source alternative
+to Rewind.ai and Windows Recall, forked from [OpenRecall](https://github.com/openrecall/openrecall).
 
 ## Features
 
-- **Time Travel**: Revisit and explore your past digital activities seamlessly, scrolling around the past activities.
-- **Local-First AI**: OpenReLife harnesses the power of OpenRecall's local AI processing, with optional cloud-based AI processing for enhanced capabilities.
-- **Semantic Search**: Advanced local OCR interprets your history, providing robust semantic search capabilities.
-- **Full Control Over Storage**: Your data is stored locally, giving you complete control over its management and security.
-- **Auto-Pause**: Recording automatically pauses when you are inactive to save space.
-- **Incognito Detection**: Automatically detects incognito/private browsing mode on ALL visible browser windows (Chrome, Safari, Firefox, Edge, Arc, Brave, Opera, Vivaldi, and more). When detected, recording is paused to protect your privacy. This feature can be toggled in the settings.
+- **Screen history:** browse past screenshots on a timeline.
+- **Local search:** find captured text with OCR and semantic search.
+- **Storage controls:** choose capture quality, frequency and retention.
+- **Privacy controls:** pause when inactive and skip supported private browser windows.
+- **Local storage:** screenshots and search data stay on your device. Cloud AI is optional.
 
 ## Ask your history
 
@@ -56,110 +33,62 @@ assistants; your chosen command may send retrieved content to its cloud provider
 
 See the [agent integration reference](docs/AGENT_INTEGRATION.md) for setup and technical details.
 
-## Get Started
- 
-### Prerequisites
-- macOS (Apple Silicon / ARM64 required; Intel/Windows/Linux support needs testing)
-- [uv](https://astral.sh/uv) (needed, for backend's Python dependency management)
-- [Node.js](https://nodejs.org/) & npm (facultative, needed to build the Electron app)
-- Python 3.11+ (should be installed and managed by uv)
- 
-### Installation
+## Install on macOS
 
-You can directly download the latest release from [GitHub releases](https://github.com/porech/openrelife/releases); as per now, the app needs external dependencies to work ([uv](https://astral.sh/uv)), so please follow the manual installation instructions to get started.
-In the near future, this will (hopefully) change.
+1. Download the Apple Silicon or Intel DMG from [GitHub releases](https://github.com/porech/openrelife/releases).
+2. Drag **OpenReLife.app** into **Applications** and open it.
+3. Grant **Screen Recording** access when prompted. **Accessibility** access lets the app read window titles.
 
-The dmg file contains the .app file, that you can drag to your Applications folder.
+The app bundles `uv` and prepares its Python environment on first launch.
 
-The app is signed with a self-signed certificate but is **not notarized by Apple** (the project is free and has no paid Apple Developer account). On first launch macOS will say it cannot verify the developer and won't open it directly — this is expected, the app is safe. To open it:
+The app is self-signed and not Apple-notarized. If macOS blocks the first launch,
+use **System Settings → Privacy & Security → Open Anyway**.
+[Code-signing details](docs/CODESIGN.md).
 
-1. Double-click OpenReLife once — macOS shows a "cannot be verified" dialog; click **Done**.
-2. Open **System Settings → Privacy & Security** and scroll down to the **Security** section.
-3. Next to the *"OpenReLife was blocked…"* message, click **Open Anyway**, then confirm with Touch ID / your password.
+## Everyday use
 
-You only need to do this once. After that, the app opens normally from the Applications folder.
+- Open the timeline with **Cmd+Shift+Space** or the menu bar icon.
+- Search your history or use **Ask AI** for questions.
+- Open settings with **Cmd+,**. Press **Esc** to close panels or hide the viewer.
 
-### Manual Installation 
-We provide a helper script to set up the environment and build the application on MacOS:
- 
-```bash
-# Clone the repository
-git clone https://github.com/openrelife/openrelife.git
+The app continues recording in the background while the viewer is hidden.
+
+## Build from source
+
+Install [uv](https://astral.sh/uv), Node.js and npm, then run:
+
+```sh
+git clone https://github.com/porech/openrelife.git
 cd openrelife
- 
-# Run installation script
 ./install.sh
 ```
- 
-This script will:
-1. Check for `uv` installation.
-2. Install Python backend dependencies.
-3. Install Electron frontend dependencies.
-4. Build the standalone macOS `.app`.
- 
-### Running the App
- 
-After the installation completes, the application will be available at:
-`electron-app/dist/mac-arm64/OpenReLife.app` (or `mac-x64` for Intel Macs).
- 
-You can drag this file to your **Applications** folder.
- 
-**On first launch:**
-1. Open Spotlight / Raycast (**Cmd+Space**) or Launchpad and type **OpenReLife**.
-2. You will be prompted to grant **Screen Recording** permission in System Settings (if not, please do it manually from System Settings -> Privacy & Security -> Screen Recording -> +). This is required to capture screenshots.
 
-note: please be aware that the first run can take a little time, and should ask recording permission as well (without the permission, it won't work).
+The script installs dependencies and builds the app under `electron-app/dist/`.
+Local signing requires the certificate described in [CODESIGN.md](docs/CODESIGN.md).
 
-**Remember that you can always close the UI pressing ESC.**
-If you experience a black page persisting for more than 30 seconds, the backend probably failed to start. You can check it opening http://localhost:8082 in a web browser - if the port 8082 is available, it should not happen. Please open an issue if you experience this.
+The backend uses Flask and the desktop UI uses Electron. The server port is
+configurable in **Settings → Advanced**; open the UI through the desktop app.
+For development and backend command-line options, see the
+[technical reference](docs/AGENT_INTEGRATION.md#development).
 
-### Backend Arguments (from OpenRecall)
---storage-path (default: user data path for your OS): allows you to specify the path where the screenshots and database should be stored. We recommend creating an encrypted volume to store your data.
+## Uninstall
 
---primary-monitor-only (default: False): only record the primary monitor (rather than individual screenshots for other monitors)
+Quit OpenReLife and move the app to the Trash. This keeps your screen history.
+To permanently remove that history too, delete its data directory:
 
-### Technical details
+| Platform | Default data directory |
+| --- | --- |
+| macOS | `~/Library/Application Support/openrelife` |
+| Windows | `%APPDATA%\openrelife` |
+| Linux | `~/.local/share/openrelife` |
 
-The app for now is a Flask backend with a Electron frontend. The backend is responsible for capturing screenshots, processing them, storing them in a database, and providing an API for the frontend to interact with. The frontend is responsible for displaying the UI and interacting with the backend. 
-
-The backend is running on port 8082 (like OpenRecall, will be configurable in the future).
-
-The frontend is running as a old way full screen app that can be toggled with a global hotkey (Cmd+Shift+Space by default, will be configurable in the future) and totally overlaps your current desktop. You can exit it by pressing the escape key (ESC), exactly like in Rewind.ai.
- 
-### Key Features & Usage
- 
-- **Global Hotkey**: Press **Cmd+Shift+Space** anytime to toggle the OpenReLife overlay.
-- **Privacy First**: All data is stored locally on your machine.
-- **Background Mode**: The app runs silently in the background; access it via the menu bar icon or hotkey.
-
-
-## Uninstall instructions
-
-To uninstall OpenReLife and remove all stored data:
-
-1. Drag the OpenReLife app from your **Applications** folder to the **Trash**.
-
-2. Remove stored data:
-   - On Windows:
-     ```
-     rmdir /s %APPDATA%\openrelife
-     ```
-   - On macOS:
-     ```
-     rm -rf ~/Library/Application\ Support/openrelife
-     ```
-   - On Linux:
-     ```
-     rm -rf ~/.local/share/openrelife
-     ```
-
-If you use AppCleaner, just drag the OpenReLife app into AppCleaner and click the button.
+If you configured a custom archive location, use that directory instead.
 
 ## Contribute
 
-As an open-source project, we welcome contributions from the community. If you'd like to help improve OpenReLife, please submit a pull request or open an issue on our GitHub repository.
+Bug reports and pull requests are welcome on [GitHub](https://github.com/porech/openrelife).
+If OpenReLife is useful to you, consider starring the project.
 
 ## License
 
-The whole source code is released under the terms of the GNU General Public License (GPL) v2. You can find a copy of the license in the LICENSE file.
-
+[GNU General Public License v2](LICENSE).

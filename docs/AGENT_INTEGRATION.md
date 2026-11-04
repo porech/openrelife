@@ -85,6 +85,8 @@ configured between 10 and 1800 seconds. Traces are capped per run and pruned to
 100 MiB/30 days on startup; pending proposals are bounded to 20 files,
 100 MiB and seven days. Local command execution currently requires macOS.
 
+## Development
+
 Development checks use disposable synthetic archives, never the personal
 capture store:
 
@@ -104,3 +106,6 @@ are not native visual acceptance. Validate the native layout on a Mac as well.
 For an isolated desktop archive, the app also accepts `--storage-path=<path>`,
 `--no-capture` and `--show`; `--backend-python=<absolute-path>` selects an
 existing development interpreter instead of creating another environment.
+
+The Python backend also accepts `--storage-path <directory>` to choose the
+archive location and `--primary-monitor-only` to capture only the main display.
